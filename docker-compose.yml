@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+    b2c-nginx:
+        image: nginx:alpine
+        container_name: b2c-nginx
+        ports:
+            - "80:80"
+            - "443:443"
+        volumes:
+            - ./docker/nginx/conf.d:/etc/nginx/conf.d
+            - ./docker/certbot/ssl:/var/www/certbot
+            - /etc/letsencrypt:/etc/letsencrypt:ro
+            - .:/var/www/html
+        depends_on:
+            - b2c-app
+        networks:
+            - b2c-network
+
+    b2c-app:
+        build:
+            context: .
+        container_name: b2c-app
+        expose:
+            - "5000"
+        networks:
+            - b2c-network
+
+    certbot:
+        image: certbot/certbot
+        container_name: b2c-certbot
+        volumes:
+            - ./docker/certbot/ssl:/var/www/certbot
+            - /etc/letsencrypt:/etc/letsencrypt
+        entrypoint: >
+            sh -c "certbot certonly --webroot -w /var/www/certbot
+            --email ilesanmiolushola9@gmail.com --agree-tos --no-eff-email
+            -d poahub.shop -d www.poahub.shop || true"
+
+networks:
+    b2c-network:
+        driver: bridge

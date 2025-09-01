@@ -1,0 +1,9 @@
+When a new user is created
+- A user observer is checked for the set so as to apply any applicable due on user creation
+
+Created ObserverServiceProvider 
+Created UserObserver
+
+Created DueReconcileCommand to apply to already created users
+
+Kept ObserverServiceProvider in config/app.php

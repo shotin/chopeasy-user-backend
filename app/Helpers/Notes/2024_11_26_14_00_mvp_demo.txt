@@ -1,0 +1,130 @@
+Good people, ICOBA Meeting Note - as at 26/11/24
+
+The meeting notes + Corrections
+
+User end  — Onboarding Flow. 
+
+1. Phone Number - Factor in the prefix of out-of-country people. 
+2. The username should be a nickname. 
+3. The graduation year should be the year of exit
+4. The year of association should be set a year. 
+5. We should have context text for these forms. 
+6. For form input compulsory put the *** there.
+
+Are you an existing member —— Why this? 
+
+1. Yes — bring out a box. 
+2. Membership ID combinations haven’t been defined very well, so many members don’t know how to use them at all
+3. The Existing - Let’s leave it for now — ICOBA will get back to us on how to move on from here — pending feedback from the ICOBA people. 
+
+At the Point of registration — Submit — The Popup has the wrong “CTA” Text — Change it. 
+
+—— What if I didn’t complete those forms — Let the system save locally, so I can continue the registration process. 
+
+
+
+
+Data Migration
+
+Data Migration Issue - Raised by Segun ++ CEO. 
+ICOBA are strongly for the Migration of Data. 
+We are to design a flow that accommodates this, therefore people won’t have to verify at all, just reset passwords and move on into the system. 
+
+
+
+Admin Area. 
+
+- Change the Picture Banner area — Ask ICOBA people (if they have any). 
+- Or UI Change to something different. 
+- When a request comes in, let me get an email also —— Go into the set admin email and that of a General Email also. 
+
+
+The Verification system 
+
+— From ICBA People — Set Admin, Chairman, then Technical Committee. 
+— What SBSC Captured — Set Admin, Set Chairman only. 
+
+— The New Layer of verification is the chairman Technical Committee. 
+
+
+
+Approve — Set Chairman 
+- When I (approve ~~~ Verify), it comes to the Chairman, and then from the Chairman, the technical committee approves. 
+
+The Process is Now: Set Chairman (Verify), Set Admin (Verify), Chairman Technical Committee (Approves Profile)… 
+
+
+The Email Template — We have an Email Template already, Kindly implement it - FE Team. 
+
+
+View Profile Stage. 
+
+1. UI Team - The Banner Advertisements Should be updated.  
+2. Once they come into the system, prompt them to Update their Data and Also make payment — UI Design. 
+3. Those tags on profile should be yellow (Background) — UI Team. 
+4. Profile Setup — Showing Percentage — UI team. — Show me what has been done and what hasn’t been done and prompt me to update my profile. 
+5. For most of those forms, we should use straight and clear language and context text in some areas — Mobola should review where is needed. 
+6. ICOBA would determine which data is compulsory that users need to fill out. 
+7. At the spouse — Give me why I should supply the details of my spouse/child —— UI Team — FE to implement. 
+8. Date of Birth — It should be the Month and Year of Birth. (Make it optional).
+9. The Dues Payment — Show me a UI in the profile area — That shows the strain of dues (2). 
+10. Show me the dues — It’s like repayment on a Loan. — Payment flow checkout. 
+11. The Setup UI Profile Card - Should be redesigned — The BLUE CTA is not showing at all. 
+12. We don’t have a wallet system - New Feature. ~~~ ICOBA would take the conversation further. 
+13. ffff — When I have, don’t auto-charge. 
+14. The UI (Popup) to Pay is not showing how much, I am to pay. 
+15. When I make a payment, show me that string in my profile. 
+16. We can make a partial payment —— Let FE and BE get back to us on this. — Partial doesn’t apply for backlog, it only applicable for the current year. 
+17. Full Payment is when you can Vote and be voted for. 
+18. For Private profile - Design a UI that shows that this profile is private — when someone views it. Also, you need to actually follow me and I accept for you to view my full profile — 
+19. We need to have a conversation about the Family integration, they shouldn’t have access to the whole or the part system itself.   
+
+
+Dues Configurations
+1. We should be able to multiple select a set. 
+2. Also, create multiple dues to apply for as many sets as we want. 
+3. 
+
+
+
+For Sign in
+- When I sign in now, I shouldn’t 
+
+
+On Post
+
+
+From the Admin 
+- report module 
+    - Financial report 
+    - And Other reports.  
+
+
+
+Admin
+- Issues of tracking the backdated dues — Let’s see who has paid and who hasn’t, so I can send them a BC. 
+
+
+
+Event 
+Elections 
+AGM — Annual Event. !~~~ We should configure it as a major event. 
+Admin should be able to POST that shows on the TL. 
+The advert would be like a post - have the “Ad Tag” — Just like twitter. 
+Request for advertisement flow from the customer end. 
+Advertisement performance. 
+Advertisement configuration from the Admin. —— Ask Moshood - like Nairaland.
+
+
+/**********************************************************************************************************/
+
+Unique emails during registration
+Check if user is alreay registered
+
+SetAdmin -> SetMembers -> Chairman -> Mr Femi and general chairman
+
+ICOBA send birthday notification
+
+Dues to capture all dues missed for the set
+
+you must pay earlierst due first

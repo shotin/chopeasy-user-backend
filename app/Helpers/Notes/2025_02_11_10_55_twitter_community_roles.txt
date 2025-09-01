@@ -1,0 +1,5 @@
+On a Twitter Community, there are three primary roles: Member, Moderator, and Administrator (Admin), with the Admin essentially being the creator of the community and having the most control over its settings and moderation functions. 
+Breakdown of roles:
+Member: Anyone who joins a community and can participate in discussions within it. 
+Moderator: A user responsible for actively monitoring conversations, enforcing community rules, and managing member interactions. 
+Administrator (Admin): The person who created the community, with full control over its settings, including adding moderators and managing overall community function. 
