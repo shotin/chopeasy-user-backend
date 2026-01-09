@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\v1\Auth;
 
 use App\Helpers\GeneralHelper;
+use App\Helpers\ImageKitHelper;
 use App\Http\Controllers\Controller;
 use App\Services\User\UserService;
 use App\Http\Requests\RegisterRequest;
@@ -11,6 +12,7 @@ use App\Http\Resources\UserResource;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\User;
+use App\Models\VendorProfile;
 use App\Notifications\EmailOtpNotification;
 use App\Responser\JsonResponser;
 use Carbon\Carbon;
@@ -20,6 +22,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
@@ -307,5 +310,86 @@ class AuthController extends Controller
                 'message' => "User not found",
             ], 404);
         }
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $user = Auth::user();
+
+        if (!$user) {
+            return response()->json(['error' => 'User not found'], 404);
+        }
+
+        // ✅ Password update requires old password validation
+        if ($request->filled('oldPassword') && $request->filled('newPassword')) {
+            if (!Hash::check($request->oldPassword, $user->password)) {
+                return response()->json(['error' => 'Old password is incorrect'], 422);
+            }
+
+            $user->password = Hash::make($request->newPassword);
+        }
+
+        // ✅ Update common fields
+        if ($request->filled('fullname')) {
+            $user->fullname = $request->fullname;
+        }
+
+        if ($request->filled('phone')) {
+            $user->phoneno = $request->phone;
+        }
+
+        if ($request->filled('email')) {
+            $user->email = $request->email;
+        }
+
+        switch ($user->user_type) {
+            case 'vendor':
+                if ($request->filled('cacNumber')) {
+                    $user->cac_certificate = $request->cacNumber;
+                }
+
+                if ($request->filled('storeAddress')) {
+                    $user->address = $request->storeAddress;
+                }
+
+                if ($request->filled('storePhoto')) {
+                    $user->store_image = ImageKitHelper::uploadBase64Image(
+                        $request->storePhoto,
+                        'vendor_store_' . $user->id . '_' . time()
+                    );
+                }
+
+                $user->save();
+                break;
+
+            case 'customer':
+                if ($request->filled('userImage')) {
+                    $user->image = ImageKitHelper::uploadBase64Image(
+                        $request->userImage,
+                        'customer_profile_' . $user->id . '_' . time()
+                    );
+                }
+                break;
+
+            case 'rider':
+                if ($request->filled('licenseNumber')) {
+                    $user->license_number = $request->licenseNumber;
+                }
+
+                if ($request->filled('idDocument')) {
+                    $user->id_document = ImageKitHelper::uploadBase64Image(
+                        $request->idDocument,
+                        'rider_id_' . $user->id . '_' . time()
+                    );
+                }
+                break;
+        }
+
+        $user->save();
+
+        return response()->json([
+            'message' => 'Profile updated successfully',
+            'user'    => $user
+        ]);
     }
 }

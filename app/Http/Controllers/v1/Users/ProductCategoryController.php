@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\v1\Users;
 
+use App\Helpers\ImageKitHelper;
 use App\Http\Controllers\Controller;
 use App\Models\OrderItem;
 use App\Models\ProductReview;
@@ -284,4 +285,25 @@ class ProductCategoryController extends Controller
             ], 500);
         }
     }
+
+    public function uploadImages(Request $request)
+    {
+        // Ensure images[] exists in the request
+        $files = $request->file('images');
+    
+        if (!$files || !is_array($files)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No images provided or wrong form-data key. Use "images[]" as key.'
+            ], 422);
+        }
+    
+        $uploadedUrls = \App\Helpers\ImageKitHelper::uploadMultipleFiles($files);
+    
+        return response()->json([
+            'success' => true,
+            'urls' => $uploadedUrls
+        ]);
+    }
+    
 }

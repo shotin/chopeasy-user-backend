@@ -58,7 +58,7 @@
     <div class="container">
         <h2>Hello {{ $user->firstname }} {{ $user->lastname }},</h2>
 
-        <p>Thank you for registering. Please use the OTP below to verify your email address. It will expire in 10 minutes.</p>
+        <p> Please use the OTP below to verify your email address. It will expire in 10 minutes.</p>
 
         <div class="otp-code">{{ $otp }}</div>
 

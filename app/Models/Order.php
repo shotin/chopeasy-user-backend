@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Order extends Model
 {
-    protected $fillable = ['user_id', 'session_id', 'order_number', 'total_amount', 'status', 'shipping_address_id', 'shipping_address_snapshot', 'payment_status', 'payment_type', 'amount_paid', 'remaining_amount', 'next_due_date', 'vendor_order_code'];
+    protected $fillable = ['user_id', 'session_id', 'order_number', 'total_amount', 'status', 'shipping_address_id', 'shipping_address_snapshot', 'payment_status', 'payment_type', 'amount_paid', 'remaining_amount', 'next_due_date', 'vendor_order_code', 'accepted_by', 'delivery_address'];
 
     protected $casts = [
         'shipping_address_snapshot' => 'array',
@@ -31,5 +31,10 @@ class Order extends Model
     public function statusLogs()
     {
         return $this->hasMany(OrderStatusLog::class)->latest();
+    }
+
+    public function vendorOrders()
+    {
+        return $this->hasManyThrough(VendorOrder::class, OrderItem::class, 'order_id', 'order_item_id');
     }
 }

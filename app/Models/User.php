@@ -17,7 +17,7 @@ class User extends Authenticatable implements JWTSubject
         'fullname',
         'middlename',
         'guardianname',
-        'username', 
+        'username',
         'main_wallet',
         'food_wallet',
         'phoneno',
@@ -44,7 +44,12 @@ class User extends Authenticatable implements JWTSubject
         'otp_expires_at',
         'email_otp',
         'main_wallet',
-        'food_wallet'
+        'food_wallet',
+        'store_name',
+        'store_image',
+        'cac_certificate',
+        'longitude',
+        'latitude',
     ];
 
     protected $hidden = ['password', 'remember_token', 'email_otp'];
@@ -59,10 +64,10 @@ class User extends Authenticatable implements JWTSubject
         'two_fa' => 'boolean',
     ];
 
-    public function sendPasswordResetNotification($token)
-    {
-        $this->notify(new ResetPassword($this, $token));
-    }
+    // public function sendPasswordResetNotification($token)
+    // {
+    //     $this->notify(new ResetPassword($this, $token));
+    // }
 
     public function getJWTIdentifier()
     {

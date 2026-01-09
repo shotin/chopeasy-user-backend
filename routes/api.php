@@ -11,10 +11,10 @@ use App\Http\Controllers\v1\Users\PaymentController;
 use App\Http\Controllers\v1\Users\ProductCategoryController;
 use App\Http\Controllers\v1\Users\ProductReviewController;
 use App\Http\Controllers\v1\Users\RecentlyViewedController;
-use App\Http\Controllers\v1\Users\RecipeController;
-use App\Http\Controllers\v1\Users\StripeWebhookController;
+use App\Http\Controllers\v1\Users\VendorOrderController;
 use App\Http\Controllers\v1\Users\VendorProductController;
 use App\Http\Controllers\v1\Users\WishlistController;
+use App\Http\Controllers\v1\Users\PostalCodeController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
@@ -23,26 +23,27 @@ Route::prefix('v1')->group(function () {
         Route::post('/register', [AuthController::class, 'register']);
         Route::post('/login', [AuthController::class, 'login']);
         Route::post('/password/email', [ForgotPasswordController::class, 'sendResetLink']);
-        Route::post('/password/email', [ForgotPasswordController::class, 'resendOtp']);
         Route::post('/password/reset', [ResetPasswordController::class, 'reset']);
         Route::post('/verify/email-otp', [AuthController::class, 'verifyOtp']);
         Route::post('/resend/email-otp', [AuthController::class, 'resendOtp']);
     });
 
-    Route::prefix('account')->group(function () {
-        Route::post('/shipping-address', [AccountController::class, 'addShippingAddress']);
-        Route::get('/all/shipping-address', [AccountController::class, 'listShippingAddresses']);
-        Route::patch('/update/shipping-address/{id}', [AccountController::class, 'updateShippingAddress']);
-        Route::delete('/shipping-address/{id}', [AccountController::class, 'deleteShippingAddress']);
-        Route::get('/shipping-address/{id}', [AccountController::class, 'getShippingAddress']);
-    });
+  
 
     Route::group(["middleware" => ["auth:api"]], function () {
+        Route::prefix('account')->group(function () {
+            Route::post('/shipping-address', [AccountController::class, 'addShippingAddress']);
+            Route::get('/all/shipping-address', [AccountController::class, 'listShippingAddresses']);
+            Route::patch('/update/shipping-address/{id}', [AccountController::class, 'updateShippingAddress']);
+            Route::delete('/shipping-address/{id}', [AccountController::class, 'deleteShippingAddress']);
+            Route::get('/shipping-address/{id}', [AccountController::class, 'getShippingAddress']);
+        });
+
         Route::prefix('auth')->group(function () {
             Route::post('logout', [AuthController::class, 'logout']);
             Route::get('user', [AuthController::class, 'getUser']);
             Route::get('profile', [AuthController::class, 'profile']);
-            Route::put('update', [AuthController::class, 'update']);
+            Route::put('update', [AuthController::class, 'updateProfile']);
             Route::get('payment/verify/{reference}', [PaymentController::class, 'verify']);
         });
         Route::prefix('vendor')->middleware('auth:api')->group(function () {
@@ -58,8 +59,20 @@ Route::prefix('v1')->group(function () {
 
         Route::prefix('orders')->group(function () {
             Route::post('checkout', [OrderController::class, 'checkout']);
+            Route::put('/{order}/update', [OrderController::class, 'update']);
             Route::get('', [OrderController::class, 'getUserOrders']);
             Route::get('/{id}', [OrderController::class, 'getOrderDetails']);
+            Route::post('/{id}/reorder', [OrderController::class, 'reorder']);
+            Route::get('/completed/all', [VendorOrderController::class, 'vendorOrders']);
+
+            Route::get('/vendor/{orderId}/items', [VendorOrderController::class, 'orderItems']);
+            Route::post('/vendor/{vendorOrder}/ready', [VendorOrderController::class, 'toggleItemReady']);
+        });
+
+         Route::prefix('rider')->group(function () {
+            Route::get('available-pickups', [OrderController::class, 'availablePickups']);
+            Route::post('accept-delivery/{orderId}', [OrderController::class, 'acceptDelivery']);
+            Route::get('my-pickups', [OrderController::class, 'myPickups']);
         });
     });
 
@@ -84,6 +97,7 @@ Route::prefix('v1')->group(function () {
     Route::delete('/cart/delete-multiple', [CartController::class, 'deleteMultipleFromCart']);
     // routes/api.php
     Route::get('/public/vendor/{vendorId}/products', [VendorProductController::class, 'publicVendorProducts']);
+    Route::get('/suggest-address', [PostalCodeController::class, 'suggestAddress']);
 
 
     Route::get('/all/vendor', [VendorProductController::class, 'listVendors']);
@@ -104,6 +118,7 @@ Route::prefix('v1')->group(function () {
     Route::post('/products', [ProductCategoryController::class, 'products']);
     Route::get('/all/unit', [ProductCategoryController::class, 'Unitindex']);
     Route::get('/product/{id}', [ProductCategoryController::class, 'getProduct']);
+    Route::post('/imagekit', [ProductCategoryController::class, 'uploadImages']);
 
     Route::prefix('wishlist')->group(function () {
         Route::get('/', [WishlistController::class, 'index']);

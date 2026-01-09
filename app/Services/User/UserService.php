@@ -2,6 +2,7 @@
 
 namespace App\Services\User;
 
+use App\Helpers\ImageKitHelper;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\User;
@@ -24,6 +25,7 @@ class UserService
     protected $userInterface;
     protected $geoLocationService;
 
+
     public function __construct(UserInterface $userInterface, GeoLocationService $geoLocationService)
     {
         $this->userInterface = $userInterface;
@@ -34,23 +36,75 @@ class UserService
     {
         $otp = rand(1000, 9999);
         $data['email_otp'] = $otp;
-        $data['otp_expires_at'] = Carbon::now()->addMinutes(10);
+        $data['otp_expires_at'] = now()->addMinutes(10);
 
+        // Vendor-specific processing
+        if (($data['user_type'] ?? null) === 'vendor') {
+            if (!empty($data['store_image'])) {
+                $data['store_image'] = ImageKitHelper::uploadBase64Image(
+                    $data['store_image'],
+                    'vendor_store_' . time()
+                );
+            }
+
+            if (!empty($data['cac_certificate'])) {
+                $data['cac_certificate'] = ImageKitHelper::uploadBase64Image(
+                    $data['cac_certificate'],
+                    'vendor_cac_' . time()
+                );
+            }
+
+            // Get vendor coordinates
+            if (!empty($data['address'])) {
+                [$lat, $lng] = $this->geoLocationService->getCoordinatesFromAddress($data['address']);
+                $data['latitude'] = $lat;
+                $data['longitude'] = $lng;
+            }
+        }
+
+        // Rider-specific geolocation
+        if (($data['user_type'] ?? null) === 'rider') {
+            if (!empty($data['address'])) {
+                [$lat, $lng] = $this->geoLocationService->getCoordinatesFromAddress($data['address']);
+                $data['latitude'] = $lat;
+                $data['longitude'] = $lng;
+            }
+        }
+
+        // Create user
         $user = $this->userInterface->create($data);
+
+        // Save vendor profile if vendor
+        // if ($data['user_type'] === 'vendor') {
+        //     $user->vendorProfile()->create([
+        //         'vendor_id' => $user->id,
+        //         'latitude' => $data['latitude'] ?? null,
+        //         'longitude' => $data['longitude'] ?? null,
+        //         'description' => $data['description'] ?? null,
+        //         'store_type' => $data['store_type'] ?? null,
+        //         'delivery_time' => $data['delivery_time'] ?? null,
+        //         'logo' => $data['store_image'] ?? null,
+        //     ]);
+        // }
 
         try {
             $user->notify(new EmailOtpNotification($user, $otp));
         } catch (\Throwable $e) {
-            // Log::error('OTP Email Send Failed: ' . $e->getMessage(), [
-            //     'user_id' => $user->id,
-            //     'email' => $user->email,
-            // ]);
+            // Log::error('OTP Email Send Failed: ' . $e->getMessage());
         }
 
-        $user->assignRole('Customer');
+        // Assign role
+        if ($data['user_type'] === 'rider') {
+            $user->assignRole('Customer');
+        } elseif ($data['user_type'] === 'vendor') {
+            $user->assignRole('Customer');
+        } else {
+            $user->assignRole('Customer');
+        }
 
         return $user;
     }
+
 
     public function login(Request $request, array $credentials)
     {

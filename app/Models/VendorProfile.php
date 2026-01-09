@@ -14,4 +14,9 @@ class VendorProfile extends Model
         'latitude',
         'longitude',
     ];
+
+     public function vendorOrders()
+    {
+        return $this->hasMany(VendorOrder::class, 'vendor_id', 'vendor_id');
+    }
 }

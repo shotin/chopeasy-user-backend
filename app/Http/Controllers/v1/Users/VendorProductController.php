@@ -163,6 +163,9 @@ class VendorProductController extends Controller
                     'users.country',
                     'users.is_verified',
                     'users.created_at',
+                    'users.store_name',
+                    'users.store_image',
+                    'users.cac_certificate',
                     'vendor_profiles.description',
                     'vendor_profiles.store_type',
                     'vendor_profiles.delivery_time',
@@ -190,9 +193,10 @@ class VendorProductController extends Controller
                     'address' => $vendor->address,
                     'state' => $vendor->state,
                     'country' => $vendor->country,
-                    'logo' => $vendor->logo
-                        ? $vendor->logo
-                        : 'https://upload.wikimedia.org/wikipedia/commons/a/ac/No_image_available.svg',
+                    'logo' => $vendor->image,
+                    'store_name' => $vendor->store_name,
+                    'logo' => $vendor->store_image,
+                    'cac' => $vendor->cac_certificate,
                     'created_at' => $vendor->created_at->format('Y-m-d H:i:s'),
 
                 ];
@@ -380,11 +384,14 @@ class VendorProductController extends Controller
     public function showVendorProducts($vendorId)
     {
         try {
-            $vendorProducts = VendorProductItem::where('vendor_id', $vendorId)
+            $vendorProducts = VendorProductItem::with('vendor')
+                ->where('vendor_id', $vendorId)
                 ->paginate(10);
+
             if ($vendorProducts->isEmpty()) {
                 return response()->json([
                     'data' => [],
+                    'vendor' => null,
                     'pagination' => [
                         'current_page' => 1,
                         'per_page' => 10,
@@ -394,9 +401,28 @@ class VendorProductController extends Controller
                 ]);
             }
 
+            // map the products to include vendor name
+            $products = $vendorProducts->map(function ($item) {
+                return [
+                    'id' => $item->id,
+                    'product_id' => $item->product_id,
+                    'vendor_id' => $item->vendor_id,
+                    'vendor_name' => $item->vendor->fullname ?? 'Unknown Vendor',
+                    'category_id' => $item->category_id,
+                    'category_name' => $item->category_name,
+                    'name' => $item->name,
+                    'logo' => $item->logo,
+                    'uom' => $item->uom,
+                    'quantity' => $item->quantity,
+                    'price' => $item->price,
+                    'created_at' => $item->created_at,
+                    'updated_at' => $item->updated_at,
+                ];
+            });
 
             return response()->json([
-                'data' => $vendorProducts->items(),
+                'data' => $products,
+                'vendor' => $vendorProducts->first()->vendor ?? null, // send vendor info
                 'pagination' => [
                     'total' => $vendorProducts->total(),
                     'per_page' => $vendorProducts->perPage(),
@@ -413,6 +439,7 @@ class VendorProductController extends Controller
             ], 500);
         }
     }
+
 
     /**
      * Show a single vendor product item.

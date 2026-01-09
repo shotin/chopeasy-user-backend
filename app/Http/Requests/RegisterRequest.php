@@ -24,10 +24,16 @@ class RegisterRequest extends FormRequest
     {
         return [
             'fullname' => 'required|string|max:255',
+            'address' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'phoneno' => 'required|string|unique:users,phoneno',
+            'address' => 'required|string|max:255',
             'user_type' => ['required', Rule::in(['customer', 'vendor', 'rider'])],
             'password'  => 'required|string|min:8|confirmed',
+
+            'store_name' => 'nullable|required_if:user_type,vendor|string|max:255',
+            'store_image' => 'nullable|string', 
+            'cac_certificate' => 'nullable|string', 
         ];
     }
 }

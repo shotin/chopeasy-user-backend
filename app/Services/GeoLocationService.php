@@ -12,6 +12,7 @@ class GeoLocationService
     public function __construct()
     {
         $this->apiKey = config('services.ipgeolocation.key');
+        $this->apiKey = config('services.google_maps.api_key');
     }
 
     public function getCountryAndCurrencyFromIP($ip)
@@ -120,5 +121,26 @@ class GeoLocationService
         } catch (\Throwable $th) {
             return JsonResponser::send(false, 'Failed to fetch analytics data.', [],  500, $th);
         }
+    }
+
+    /**
+     * Get latitude and longitude from an address string.
+     *
+     * @param string $address
+     * @return array [$lat, $lng]
+     */
+    public function getCoordinatesFromAddress(string $address): array
+    {
+        $response = Http::get('https://maps.googleapis.com/maps/api/geocode/json', [
+            'address' => $address,
+            'key' => $this->apiKey,
+        ])->json();
+
+        if (!empty($response['results'][0]['geometry']['location'])) {
+            $location = $response['results'][0]['geometry']['location'];
+            return [$location['lat'], $location['lng']];
+        }
+
+        return [null, null];
     }
 }

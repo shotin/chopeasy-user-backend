@@ -3,17 +3,19 @@
 namespace App\Helpers;
 
 use GuzzleHttp\Client;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Http\UploadedFile;
 
 class ImageKitHelper
 {
-    public static function uploadBase64Image(string $base64Image, string $fileName = null): ?string
+    /**
+     * Upload a single file to ImageKit using form-data
+     */
+    public static function uploadFile(UploadedFile $file, string $fileName = null): ?string
     {
         $apiUrl = 'https://upload.imagekit.io/api/v1/files/upload';
-        $publicKey = config('services.imagekit.public');
         $privateKey = config('services.imagekit.private');
         $folder = config('services.imagekit.folder') ?? '/blogs';
-        $fileName = $fileName ?? 'blog_' . time();
+        $fileName = $fileName ?? $file->getClientOriginalName();
 
         try {
             $client = new Client();
@@ -23,7 +25,7 @@ class ImageKitHelper
                 'multipart' => [
                     [
                         'name' => 'file',
-                        'contents' => $base64Image,
+                        'contents' => fopen($file->getRealPath(), 'r'),
                     ],
                     [
                         'name' => 'fileName',
@@ -43,8 +45,27 @@ class ImageKitHelper
             $body = json_decode($response->getBody(), true);
             return $body['url'] ?? null;
         } catch (\Throwable $e) {
-            Log::error('ImageKit Upload Failed: ' . $e->getMessage());
+            // Log::error('ImageKit Upload Failed: ' . $e->getMessage());
             return null;
         }
+    }
+
+    /**
+     * Upload multiple files from form-data
+     *
+     * @param UploadedFile[] $files
+     * @return array URLs of uploaded images
+     */
+    public static function uploadMultipleFiles(array $files): array
+    {
+        $urls = [];
+
+        foreach ($files as $file) {
+            if ($file instanceof UploadedFile) {
+                $urls[] = self::uploadFile($file);
+            }
+        }
+
+        return array_filter($urls); // only successful uploads
     }
 }
