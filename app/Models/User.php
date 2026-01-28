@@ -50,6 +50,7 @@ class User extends Authenticatable implements JWTSubject
         'cac_certificate',
         'longitude',
         'latitude',
+        'vehicle',
     ];
 
     protected $hidden = ['password', 'remember_token', 'email_otp'];

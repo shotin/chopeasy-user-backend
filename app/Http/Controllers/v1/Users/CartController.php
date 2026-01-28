@@ -69,9 +69,12 @@ class CartController extends Controller
 
 
     /**
-     * Fetch product details from Inventory API.
+     * Fetch product details from Inventory API and local vendor pricing.
+     * 
+     * @param int $productId Product ID from inventory
+     * @param int|null $vendorId Vendor ID to get custom pricing
      */
-    protected function getProductDetails(int $productId): ?array
+    protected function getProductDetails(int $productId, ?int $vendorId = null): ?array
     {
         try {
             $response = Http::withToken(config('services.inventory.api_token'))
@@ -86,17 +89,69 @@ class CartController extends Controller
                 return null;
             }
 
+            // If no vendor_id passed, try to extract from inventory API
+            if (!$vendorId && (isset($product['vendor']) || isset($product['user']))) {
+                $vendorData = $product['vendor'] ?? $product['user'] ?? null;
+                $vendorId = $vendorData['id'] ?? null;
+            }
+
+            // Query local vendor_product_items table for vendor's custom price
+            $vendorSetPrice = null;
+            $vendorProductItem = null;
+            $vendor = null;
+            
+            if ($vendorId) {
+                // Query local database for vendor's price
+                $vendorProductItem = \App\Models\VendorProductItem::where('product_id', $productId)
+                    ->where('vendor_id', $vendorId)
+                    ->with('vendor') // Eager load vendor details
+                    ->first();
+                
+                if ($vendorProductItem) {
+                    $vendorSetPrice = $vendorProductItem->price;
+                    
+                    // Get vendor info from local database
+                    if ($vendorProductItem->vendor) {
+                        $vendor = [
+                            'id' => $vendorProductItem->vendor->id,
+                            'fullname' => $vendorProductItem->vendor->fullname ?? null,
+                            'username' => $vendorProductItem->vendor->username ?? null,
+                            'email' => $vendorProductItem->vendor->email ?? null,
+                            'phoneno' => $vendorProductItem->vendor->phoneno ?? null,
+                            'address' => $vendorProductItem->vendor->address ?? null,
+                            'lga' => $vendorProductItem->vendor->lga ?? null,
+                            'state' => $vendorProductItem->vendor->state ?? null,
+                            'country' => $vendorProductItem->vendor->country ?? null,
+                            'store_name' => $vendorProductItem->vendor->store_name ?? null,
+                            'store_image' => $vendorProductItem->vendor->store_image ?? null,
+                            'latitude' => $vendorProductItem->vendor->latitude ?? null,
+                            'longitude' => $vendorProductItem->vendor->longitude ?? null,
+                        ];
+                    }
+                }
+            }
+
             return [
                 'id' => $product['id'],
                 'name' => $product['name'],
-                'cost' => $product['cost'],
+                'cost' => $vendorSetPrice, // Use ONLY vendor's price
+                'original_cost' => $product['cost'] ?? 0, 
+                'price' => $vendorSetPrice, // Vendor's actual price from local DB
+                'weight_kg' => $product['weight_kg'] ?? $product['weight'] ?? 0,
                 'category_id' => $product['category_id'] ?? null,
                 'product_for' => $product['product_for'] ?? 'retail',
                 'image' => $product['image'] ?? null,
                 'other_images' => json_decode($product['other_images'] ?? '[]', true),
                 'unit' => isset($product['unit']) ? (array) $product['unit'] : null,
+                'vendor' => $vendor, // Include vendor information from local DB
+                'vendor_product_item_id' => $vendorProductItem?->id, // Reference to local pricing
             ];
         } catch (\Throwable $e) {
+            Log::error('Error fetching product details', [
+                'product_id' => $productId,
+                'vendor_id' => $vendorId,
+                'error' => $e->getMessage()
+            ]);
             return null;
         }
     }
@@ -108,7 +163,7 @@ class CartController extends Controller
     public function addToCart(Request $request)
     {
         $request->validate([
-            'product_id' => 'required|integer',
+            'vendor_product_item_id' => 'required|integer|exists:vendor_product_items,id',
             'quantity' => 'required|integer|min:1',
             'product_variant_id'  => 'nullable|integer',
         ]);
@@ -122,9 +177,17 @@ class CartController extends Controller
         $productVariantId = $request->input('product_variant_id');
         $variantSnapshot = $productVariantId ? $this->getVariantDetails($productVariantId) : null;
 
-        $product = $this->getProductDetails($request->product_id);
-        if (!$product || $product['product_for'] !== 'retail') {
-            return $this->buildResponse(['error' => 'Product not available'], 404, $cookie);
+        // Get vendor product item from local database
+        $vendorProductItem = \App\Models\VendorProductItem::with('vendor')->find($request->vendor_product_item_id);
+        
+        if (!$vendorProductItem) {
+            return $this->buildResponse(['error' => 'Vendor product not found'], 404, $cookie);
+        }
+
+        // Get product details from inventory API
+        $product = $this->getProductDetails($vendorProductItem->product_id, $vendorProductItem->vendor_id);
+        if (!$product) {
+            return $this->buildResponse(['error' => 'Product not found in inventory'], 404, $cookie);
         }
 
         $variant = null;
@@ -169,10 +232,14 @@ class CartController extends Controller
             })
             ->first();
 
+        // Use vendor's price (already prioritized in getProductDetails)
+        $priceToUse = $product['cost']; // This is already the vendor's price from getProductDetails
+
         if ($cartItem) {
             $cartItem->quantity += $request->quantity;
-            $cartItem->price_at_addition = $product['cost'];
+            $cartItem->price_at_addition = $priceToUse;
             $cartItem->total_cost = $cartItem->quantity * $cartItem->price_at_addition;
+            $cartItem->product_snapshot = $product; // Update snapshot with latest vendor info
             $cartItem->save();
         } else {
             $cartItem = Cart::create([
@@ -180,8 +247,8 @@ class CartController extends Controller
                 'session_id' => $sessionId,
                 'product_id' => $product['id'],
                 'quantity' => $request->quantity,
-                'price_at_addition' => $product['cost'],
-                'total_cost' => $request->quantity * $product['cost'],
+                'price_at_addition' => $priceToUse,
+                'total_cost' => $request->quantity * $priceToUse,
                 'product_snapshot' => $product,
                 'product_variant_id' => $productVariantId,
                 'variant_snapshot' => $variantSnapshot,
@@ -319,7 +386,7 @@ class CartController extends Controller
     {
         $request->validate([
             'products' => 'required|array|min:1',
-            'products.*.product_id' => 'required|integer',
+            'products.*.vendor_product_item_id' => 'required|integer|exists:vendor_product_items,id',
             'products.*.quantity' => 'required|integer|min:1',
             'products.*.product_variant_id' => 'nullable|integer',
         ]);
@@ -338,9 +405,16 @@ class CartController extends Controller
         $addedItems = [];
 
         foreach ($request->products as $item) {
-            $product = $this->getProductDetails($item['product_id']);
-            if (!$product || $product['product_for'] !== 'retail') {
-                continue;
+            // Get vendor product item from local database
+            $vendorProductItem = \App\Models\VendorProductItem::with('vendor')->find($item['vendor_product_item_id']);
+            
+            if (!$vendorProductItem) {
+                continue; // Skip if vendor product not found
+            }
+
+            $product = $this->getProductDetails($vendorProductItem->product_id, $vendorProductItem->vendor_id);
+            if (!$product) {
+                continue; // Skip if product not found in inventory
             }
 
             // Get and validate variant
@@ -349,7 +423,7 @@ class CartController extends Controller
             if ($productVariantId) {
                 $variant = $this->getVariantDetails($productVariantId);
 
-                if (!$variant || (int) $variant['product_id'] !== (int) $item['product_id']) {
+                if (!$variant || (int) $variant['product_id'] !== (int) $vendorProductItem->product_id) {
                     continue; // skip if variant is invalid or mismatched
                 }
             }
@@ -371,7 +445,8 @@ class CartController extends Controller
                 })
                 ->first();
 
-            $cost = $variant['cost'] ?? $product['cost'];
+            // Prioritize variant price, then vendor's product price
+            $cost = $variant['price'] ?? $variant['cost'] ?? $product['cost'];
 
             if ($cartItem) {
                 $cartItem->quantity += $item['quantity'];

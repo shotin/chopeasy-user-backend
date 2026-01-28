@@ -15,6 +15,9 @@ class DatabaseSeeder extends Seeder
             RoleSeeder::class,
             PermissionSeeder::class,
             UserSeeder::class,
+            
+            // Pricing Engine (uncomment to seed pricing data)
+            // PricingEngineSeeder::class,
         ]);
     }
 }

@@ -54,20 +54,37 @@ class UserService
                 );
             }
 
-            // Get vendor coordinates
-            if (!empty($data['address'])) {
-                [$lat, $lng] = $this->geoLocationService->getCoordinatesFromAddress($data['address']);
-                $data['latitude'] = $lat;
-                $data['longitude'] = $lng;
+            // Get vendor coordinates if not provided in payload
+            if (empty($data['latitude']) || empty($data['longitude'])) {
+                if (!empty($data['address'])) {
+                    [$lat, $lng] = $this->geoLocationService->getCoordinatesFromAddress($data['address']);
+                    $data['latitude'] = $lat ?? $data['latitude'] ?? null;
+                    $data['longitude'] = $lng ?? $data['longitude'] ?? null;
+                }
             }
         }
 
         // Rider-specific geolocation
         if (($data['user_type'] ?? null) === 'rider') {
-            if (!empty($data['address'])) {
-                [$lat, $lng] = $this->geoLocationService->getCoordinatesFromAddress($data['address']);
-                $data['latitude'] = $lat;
-                $data['longitude'] = $lng;
+            // Get rider coordinates if not provided in payload
+            if (empty($data['latitude']) || empty($data['longitude'])) {
+                if (!empty($data['address'])) {
+                    [$lat, $lng] = $this->geoLocationService->getCoordinatesFromAddress($data['address']);
+                    $data['latitude'] = $lat ?? $data['latitude'] ?? null;
+                    $data['longitude'] = $lng ?? $data['longitude'] ?? null;
+                }
+            }
+        }
+
+        // Customer geolocation - use provided coordinates or geocode from address
+        if (($data['user_type'] ?? null) === 'customer') {
+            // Get customer coordinates if not provided in payload
+            if (empty($data['latitude']) || empty($data['longitude'])) {
+                if (!empty($data['address'])) {
+                    [$lat, $lng] = $this->geoLocationService->getCoordinatesFromAddress($data['address']);
+                    $data['latitude'] = $lat ?? $data['latitude'] ?? null;
+                    $data['longitude'] = $lng ?? $data['longitude'] ?? null;
+                }
             }
         }
 

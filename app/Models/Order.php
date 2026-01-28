@@ -6,10 +6,51 @@ use Illuminate\Database\Eloquent\Model;
 
 class Order extends Model
 {
-    protected $fillable = ['user_id', 'session_id', 'order_number', 'total_amount', 'status', 'shipping_address_id', 'shipping_address_snapshot', 'payment_status', 'payment_type', 'amount_paid', 'remaining_amount', 'next_due_date', 'vendor_order_code', 'accepted_by', 'delivery_address'];
+    protected $fillable = [
+        'user_id',
+        'session_id',
+        'order_number',
+        'total_amount',
+        'status',
+        'shipping_address_id',
+        'shipping_address_snapshot',
+        'payment_status',
+        'payment_type',
+        'amount_paid',
+        'remaining_amount',
+        'next_due_date',
+        'vendor_order_code',
+        'accepted_by',
+        'delivery_address',
+        'total_weight',
+        'item_count',
+        'distance_in_km',
+        'computed_total_charge',
+        'platform_revenue',
+        'rider_payout',
+        'vendor_payout',
+        'pricing_config_id',
+        'weight_tier_id',
+        'pricing_breakdown',
+        'pickup_latitude',
+        'pickup_longitude',
+        'delivery_latitude',
+        'delivery_longitude',
+    ];
 
     protected $casts = [
         'shipping_address_snapshot' => 'array',
+        'pricing_breakdown' => 'array',
+        'total_weight' => 'decimal:2',
+        'distance_in_km' => 'decimal:2',
+        'computed_total_charge' => 'decimal:2',
+        'platform_revenue' => 'decimal:2',
+        'rider_payout' => 'decimal:2',
+        'vendor_payout' => 'decimal:2',
+        'pickup_latitude' => 'decimal:8',
+        'pickup_longitude' => 'decimal:8',
+        'delivery_latitude' => 'decimal:8',
+        'delivery_longitude' => 'decimal:8',
     ];
 
 
@@ -36,5 +77,15 @@ class Order extends Model
     public function vendorOrders()
     {
         return $this->hasManyThrough(VendorOrder::class, OrderItem::class, 'order_id', 'order_item_id');
+    }
+
+    public function pricingConfig()
+    {
+        return $this->belongsTo(PricingConfig::class);
+    }
+
+    public function weightTier()
+    {
+        return $this->belongsTo(WeightTier::class);
     }
 }

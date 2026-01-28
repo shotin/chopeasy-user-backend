@@ -15,6 +15,11 @@ use App\Http\Controllers\v1\Users\VendorOrderController;
 use App\Http\Controllers\v1\Users\VendorProductController;
 use App\Http\Controllers\v1\Users\WishlistController;
 use App\Http\Controllers\v1\Users\PostalCodeController;
+use App\Http\Controllers\v1\Users\TopRatedController;
+use App\Http\Controllers\v1\Orders\OrderPricingController;
+use App\Http\Controllers\Admin\PricingConfigController;
+use App\Http\Controllers\Admin\WeightTierController;
+use App\Http\Controllers\Admin\RiderPayoutRuleController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
@@ -58,6 +63,7 @@ Route::prefix('v1')->group(function () {
         Route::post('/verify-payment', [PaymentController::class, 'verify']);
 
         Route::prefix('orders')->group(function () {
+            Route::post('estimate', [OrderPricingController::class, 'estimate']);
             Route::post('checkout', [OrderController::class, 'checkout']);
             Route::put('/{order}/update', [OrderController::class, 'update']);
             Route::get('', [OrderController::class, 'getUserOrders']);
@@ -84,6 +90,34 @@ Route::prefix('v1')->group(function () {
         Route::get('/admin/orders/{orderId}', [OrderController::class, 'getOrderDetailsForAdmin']);
         Route::get('/admin/users', [AuthController::class, 'getAllUsersForAdmin']);
         Route::get('admin/users/{id}', [AuthController::class, 'getSingleUserForAdmin']);
+
+        // Admin Pricing Management
+        Route::prefix('admin')->group(function () {
+            // Pricing Configurations
+            Route::get('pricing-config', [PricingConfigController::class, 'index']);
+            Route::post('pricing-config', [PricingConfigController::class, 'store']);
+            Route::get('pricing-config/{pricingConfig}', [PricingConfigController::class, 'show']);
+            Route::patch('pricing-config/{pricingConfig}', [PricingConfigController::class, 'update']);
+            Route::delete('pricing-config/{pricingConfig}', [PricingConfigController::class, 'destroy']);
+            Route::post('pricing-config/{pricingConfig}/toggle-active', [PricingConfigController::class, 'toggleActive']);
+            Route::post('pricing-preview', [PricingConfigController::class, 'preview']);
+            Route::post('pricing-validate', [PricingConfigController::class, 'validate']);
+
+            // Weight Tiers
+            Route::get('weight-tiers', [WeightTierController::class, 'index']);
+            Route::post('weight-tiers', [WeightTierController::class, 'store']);
+            Route::post('weight-tiers/bulk', [WeightTierController::class, 'bulkStore']);
+            Route::get('weight-tiers/{weightTier}', [WeightTierController::class, 'show']);
+            Route::patch('weight-tiers/{weightTier}', [WeightTierController::class, 'update']);
+            Route::delete('weight-tiers/{weightTier}', [WeightTierController::class, 'destroy']);
+
+            // Rider Payout Rules
+            Route::get('rider-payout-rules', [RiderPayoutRuleController::class, 'index']);
+            Route::post('rider-payout-rules', [RiderPayoutRuleController::class, 'store']);
+            Route::get('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'show']);
+            Route::patch('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'update']);
+            Route::delete('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'destroy']);
+        });
     });
 
     // Public routes
@@ -102,6 +136,10 @@ Route::prefix('v1')->group(function () {
 
     Route::get('/all/vendor', [VendorProductController::class, 'listVendors']);
     Route::get('/all/categories', [VendorProductController::class, 'listVendorCategories']);
+
+    // Public Pricing Information
+    Route::get('/pricing-rates', [OrderPricingController::class, 'getPricingRates']);
+    Route::post('/calculate-distance', [OrderPricingController::class, 'calculateDistance']);
     // Store vendor products (bulk add)
     Route::post('/vendor/products', [VendorProductController::class, 'storeVendorProducts']);
 
@@ -135,4 +173,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/', [BlogController::class, 'index']);
         Route::get('/{id}', [BlogController::class, 'show']);
     });
+
+    // Top Rated endpoints (public)
+    Route::get('/top-rated/stores', [TopRatedController::class, 'topRatedStores']);
+    Route::get('/top-rated/products', [TopRatedController::class, 'topRatedProducts']);
 });

@@ -41,32 +41,32 @@ class WishlistController extends Controller
         return $sessionId;
     }
 
-   public function index(Request $request)
-{
-    try {
-        Auth::shouldUse('api');
-        $userId = Auth::id();
-        $sessionId = $userId ? null : $this->getSessionId($request);
+    public function index(Request $request)
+    {
+        try {
+            Auth::shouldUse('api');
+            $userId = Auth::id();
+            $sessionId = $userId ? null : $this->getSessionId($request);
 
-        $wishlistItems = Wishlist::where(function ($q) use ($userId, $sessionId) {
-            $userId ? $q->where('user_id', $userId) : $q->where('session_id', $sessionId);
-        })->get();
+            $wishlistItems = Wishlist::where(function ($q) use ($userId, $sessionId) {
+                $userId ? $q->where('user_id', $userId) : $q->where('session_id', $sessionId);
+            })->get();
 
-        $wishlistMap = $wishlistItems->pluck('id', 'product_id'); 
+            $wishlistMap = $wishlistItems->pluck('id', 'product_id');
 
-        $productIds = $wishlistMap->keys()->toArray();
-        $productDetails = $this->fetchProductsFromInventory($productIds);
+            $productIds = $wishlistMap->keys()->toArray();
+            $productDetails = $this->fetchProductsFromInventory($productIds);
 
-        $productDetails = collect($productDetails)->map(function ($product) use ($wishlistMap) {
-            $product['wishlist_id'] = $wishlistMap[$product['id']] ?? null;
-            return $product;
-        });
+            $productDetails = collect($productDetails)->map(function ($product) use ($wishlistMap) {
+                $product['wishlist_id'] = $wishlistMap[$product['id']] ?? null;
+                return $product;
+            });
 
-        return response()->json(['wishlist' => $productDetails]);
-    } catch (Exception $e) {
-        return response()->json(['error' => 'Failed to fetch wishlist'], 500);
+            return response()->json(['wishlist' => $productDetails]);
+        } catch (Exception $e) {
+            return response()->json(['error' => 'Failed to fetch wishlist'], 500);
+        }
     }
-}
 
 
     public function store(Request $request)
