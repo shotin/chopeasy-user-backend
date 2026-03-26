@@ -27,7 +27,7 @@ class RegisterRequest extends FormRequest
             'address' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'phoneno' => 'required|string|unique:users,phoneno',
-            'user_type' => ['required', Rule::in(['customer', 'vendor', 'rider'])],
+            'user_type' => ['required', Rule::in(['customer', 'vendor', 'rider', 'agent'])],
             'password'  => 'required|string|min:8|confirmed',
 
             'store_name' => 'nullable|required_if:user_type,vendor|string|max:255',
@@ -37,6 +37,11 @@ class RegisterRequest extends FormRequest
             'latitude' => 'nullable|numeric|between:-90,90',
             'longitude' => 'nullable|numeric|between:-180,180',
             'vehicle' => ['nullable', 'required_if:user_type,rider', Rule::in(['motorcycle', 'bicycle', 'car'])],
+            'bank_name' => 'nullable|string|max:255',
+            'bank_code' => 'nullable|string|max:50',
+            'account_number' => 'nullable|string|max:50',
+            'account_name' => 'nullable|string|max:255',
+            'referral_code' => 'nullable|string|exists:users,id', // agent id when customer signs up via agent link
         ];
     }
 }

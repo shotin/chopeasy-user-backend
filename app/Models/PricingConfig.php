@@ -13,9 +13,11 @@ class PricingConfig extends Model
         'name',
         'base_charge',
         'service_charge',
+        'service_fee_percent',
         'charge_per_distance',
         'referral_bonus_percentage',
         'region_id',
+        'currency',
         'is_active',
         'description',
     ];
@@ -23,6 +25,7 @@ class PricingConfig extends Model
     protected $casts = [
         'base_charge' => 'decimal:2',
         'service_charge' => 'decimal:2',
+        'service_fee_percent' => 'decimal:2',
         'charge_per_distance' => 'decimal:2',
         'referral_bonus_percentage' => 'decimal:2',
         'is_active' => 'boolean',

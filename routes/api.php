@@ -16,10 +16,18 @@ use App\Http\Controllers\v1\Users\VendorProductController;
 use App\Http\Controllers\v1\Users\WishlistController;
 use App\Http\Controllers\v1\Users\PostalCodeController;
 use App\Http\Controllers\v1\Users\TopRatedController;
+use App\Http\Controllers\v1\Users\NotificationController;
 use App\Http\Controllers\v1\Orders\OrderPricingController;
+use App\Http\Controllers\v1\Agent\AgentController;
 use App\Http\Controllers\Admin\PricingConfigController;
 use App\Http\Controllers\Admin\WeightTierController;
 use App\Http\Controllers\Admin\RiderPayoutRuleController;
+use App\Http\Controllers\Admin\AdminDashboardController;
+use App\Http\Controllers\Admin\AdminVendorController;
+use App\Http\Controllers\Admin\AdminProductController;
+use App\Http\Controllers\Admin\AdminAgentController;
+use App\Http\Controllers\Admin\AdminAgentWithdrawalController;
+use App\Http\Controllers\Admin\AdminNotificationController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
@@ -36,6 +44,15 @@ Route::prefix('v1')->group(function () {
   
 
     Route::group(["middleware" => ["auth:api"]], function () {
+        Route::prefix('agent')->group(function () {
+            Route::get('dashboard', [AgentController::class, 'dashboard']);
+            Route::put('bank-details', [AgentController::class, 'updateBankDetails']);
+            Route::post('bank-details', [AgentController::class, 'updateBankDetails']);
+            Route::get('banks', [AgentController::class, 'listBanks']);
+            Route::post('bank-details/resolve', [AgentController::class, 'resolveBankDetails']);
+            Route::post('withdrawals', [AgentController::class, 'requestWithdrawal']);
+        });
+
         Route::prefix('account')->group(function () {
             Route::post('/shipping-address', [AccountController::class, 'addShippingAddress']);
             Route::get('/all/shipping-address', [AccountController::class, 'listShippingAddresses']);
@@ -56,6 +73,8 @@ Route::prefix('v1')->group(function () {
             Route::post('products-by-category', [VendorProductController::class, 'getProductsByCategory']);
             Route::post('products', [VendorProductController::class, 'storeVendorProducts']);
             Route::post('profile', [VendorProductController::class, 'updateProfile']);
+            Route::get('notifications', [NotificationController::class, 'vendorNotifications']);
+            Route::post('notifications/read-all', [NotificationController::class, 'markAllAsRead']);
         });
         Route::post('/payment/initialize', [PaymentController::class, 'initialize']);
         Route::get('/payment/callback', [PaymentController::class, 'callback']);
@@ -65,6 +84,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('orders')->group(function () {
             Route::post('estimate', [OrderPricingController::class, 'estimate']);
             Route::post('checkout', [OrderController::class, 'checkout']);
+             Route::post('/{order}/confirm', [OrderController::class, 'confirmDelivery']);
             Route::put('/{order}/update', [OrderController::class, 'update']);
             Route::get('', [OrderController::class, 'getUserOrders']);
             Route::get('/{id}', [OrderController::class, 'getOrderDetails']);
@@ -88,8 +108,27 @@ Route::prefix('v1')->group(function () {
         Route::delete('/blog/{id}', [BlogController::class, 'destroy']);
         Route::get('/admin/orders', [OrderController::class, 'getAllOrdersForAdmin']);
         Route::get('/admin/orders/{orderId}', [OrderController::class, 'getOrderDetailsForAdmin']);
+        Route::patch('/admin/orders/{orderId}/status', [OrderController::class, 'updateOrderStatusForAdmin']);
         Route::get('/admin/users', [AuthController::class, 'getAllUsersForAdmin']);
-        Route::get('admin/users/{id}', [AuthController::class, 'getSingleUserForAdmin']);
+        Route::get('/admin/users/{id}', [AuthController::class, 'getSingleUserForAdmin']);
+        Route::post('/admin/users/{id}/toggle-status', [AuthController::class, 'toggleUserStatus']);
+
+        // Admin Dashboard
+        Route::get('/admin/dashboard/metrics', [AdminDashboardController::class, 'metrics']);
+        Route::get('/admin/dashboard/chart', [AdminDashboardController::class, 'chartData']);
+        Route::get('/admin/dashboard/activity', [AdminDashboardController::class, 'recentActivity']);
+
+        // Admin Vendors, Products, Agents, Notifications
+        Route::get('/admin/vendors', [AdminVendorController::class, 'index']);
+        Route::get('/admin/vendors/{id}', [AdminVendorController::class, 'show']);
+        Route::get('/admin/products', [AdminProductController::class, 'index']);
+        Route::get('/admin/agents', [AdminAgentController::class, 'index']);
+        Route::get('/admin/agents/{id}', [AdminAgentController::class, 'show']);
+        Route::get('/admin/agent-withdrawals', [AdminAgentWithdrawalController::class, 'index']);
+        Route::get('/admin/agent-withdrawals/history', [AdminAgentWithdrawalController::class, 'history']);
+        Route::post('/admin/agent-withdrawals/{id}/approve', [AdminAgentWithdrawalController::class, 'approve']);
+        Route::post('/admin/agent-withdrawals/{id}/reject', [AdminAgentWithdrawalController::class, 'reject']);
+        Route::get('/admin/notifications', [AdminNotificationController::class, 'index']);
 
         // Admin Pricing Management
         Route::prefix('admin')->group(function () {
@@ -109,6 +148,7 @@ Route::prefix('v1')->group(function () {
             Route::post('weight-tiers/bulk', [WeightTierController::class, 'bulkStore']);
             Route::get('weight-tiers/{weightTier}', [WeightTierController::class, 'show']);
             Route::patch('weight-tiers/{weightTier}', [WeightTierController::class, 'update']);
+            Route::post('weight-tiers/{weightTier}/toggle-active', [WeightTierController::class, 'toggleActive']);
             Route::delete('weight-tiers/{weightTier}', [WeightTierController::class, 'destroy']);
 
             // Rider Payout Rules
@@ -116,6 +156,7 @@ Route::prefix('v1')->group(function () {
             Route::post('rider-payout-rules', [RiderPayoutRuleController::class, 'store']);
             Route::get('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'show']);
             Route::patch('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'update']);
+            Route::post('rider-payout-rules/{riderPayoutRule}/toggle-active', [RiderPayoutRuleController::class, 'toggleActive']);
             Route::delete('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'destroy']);
         });
     });

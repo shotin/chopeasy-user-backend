@@ -29,13 +29,12 @@ class ClearOldReadNotifications extends Command
      */
     public function handle()
     {
-        $oneYearAgo = Carbon::now()->subYear();
         $sixMonthsAgo = Carbon::now()->subMonths(6);
 
         // Delete old read notifications
-        DB::table('user_notifications')
-            ->where('read', 'true')
-            ->where('created_at', '<', $sixMonthsAgo)
+        DB::table('notifications')
+            ->whereNotNull('read_at')
+            ->where('read_at', '<', $sixMonthsAgo)
             ->delete();
 
         $this->info('Old read notifications cleared successfully.');

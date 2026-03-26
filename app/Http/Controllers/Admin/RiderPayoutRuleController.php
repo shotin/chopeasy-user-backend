@@ -25,7 +25,7 @@ class RiderPayoutRuleController extends Controller
             $query->where('is_active', $request->boolean('is_active'));
         }
 
-        $rules = $query->orderedByPriority()->paginate(50);
+        $rules = $query->orderedByMinDistance()->paginate(50);
 
         return response()->json([
             'success' => true,
@@ -39,18 +39,18 @@ class RiderPayoutRuleController extends Controller
     public function store(Request $request): JsonResponse
     {
         $request->validate([
-            'max_distance' => 'required|numeric|min:0',
-            'flat_payout' => 'required|numeric|min:0',
-            'weight_limit' => 'nullable|numeric|min:0',
-            'additional_per_km' => 'nullable|numeric|min:0',
-            'additional_per_kg' => 'nullable|numeric|min:0',
+            'zone_name' => 'required|string|max:50',
+            'min_distance' => 'required|numeric|min:0',
+            'max_distance' => 'nullable|numeric|min:30|gte:min_distance',
+            'flat_payout' => 'required|numeric|min:0',  // Zone fee
             'region_id' => 'required|string|max:50',
             'is_active' => 'boolean',
-            'priority' => 'nullable|integer|min:0',
         ]);
 
         try {
-            $rule = RiderPayoutRule::create($request->all());
+            $data = $request->only(['zone_name', 'min_distance', 'max_distance', 'flat_payout', 'region_id', 'is_active']);
+            $data['priority'] = RiderPayoutRule::where('region_id', $request->region_id)->max('priority') + 1;
+            $rule = RiderPayoutRule::create($data);
 
             return response()->json([
                 'success' => true,
@@ -83,18 +83,19 @@ class RiderPayoutRuleController extends Controller
     public function update(Request $request, RiderPayoutRule $riderPayoutRule): JsonResponse
     {
         $request->validate([
-            'max_distance' => 'required|numeric|min:0',
+            'zone_name' => 'required|string|max:50',
+            'min_distance' => 'required|numeric|min:0',
+            'max_distance' => 'nullable|numeric|min:30|gte:min_distance',
             'flat_payout' => 'required|numeric|min:0',
-            'weight_limit' => 'nullable|numeric|min:0',
-            'additional_per_km' => 'nullable|numeric|min:0',
-            'additional_per_kg' => 'nullable|numeric|min:0',
             'region_id' => 'required|string|max:50',
             'is_active' => 'boolean',
-            'priority' => 'nullable|integer|min:0',
         ]);
 
         try {
-            $riderPayoutRule->update($request->all());
+            $riderPayoutRule->update($request->only([
+                'zone_name', 'min_distance', 'max_distance', 'flat_payout',
+                'region_id', 'is_active'
+            ]));
 
             return response()->json([
                 'success' => true,
@@ -105,6 +106,27 @@ class RiderPayoutRuleController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update rider payout rule',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Toggle active status
+     */
+    public function toggleActive(RiderPayoutRule $riderPayoutRule): JsonResponse
+    {
+        try {
+            $riderPayoutRule->update(['is_active' => !$riderPayoutRule->is_active]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Status updated successfully',
+                'data' => $riderPayoutRule->fresh(),
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to toggle status',
                 'error' => $e->getMessage(),
             ], 500);
         }

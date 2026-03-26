@@ -14,6 +14,7 @@ class WeightTier extends Model
         'max_weight',
         'multiplier',
         'base_service_fee',
+        'price_per_kg',
         'region_id',
         'is_active',
     ];
@@ -23,25 +24,52 @@ class WeightTier extends Model
         'max_weight' => 'decimal:2',
         'multiplier' => 'integer',
         'base_service_fee' => 'decimal:2',
+        'price_per_kg' => 'decimal:2',
         'is_active' => 'boolean',
     ];
 
     /**
-     * Find the appropriate weight tier for a given weight
+     * Get active weight rate (price per kg) for region
+     * New model: Weight Fee = weight × price_per_kg (e.g. ₦90/kg)
      */
-    public static function findTierForWeight(float $weight, ?string $regionId = 'NG-DEFAULT'): ?self
+    public static function getActiveRate(?string $regionId = 'NG-DEFAULT'): ?self
     {
         return self::where('region_id', $regionId)
             ->where('is_active', true)
-            ->where('min_weight', '<=', $weight)
-            ->where('max_weight', '>=', $weight)
             ->orderBy('min_weight', 'asc')
             ->first();
     }
 
     /**
-     * Calculate the service fee for this tier
+     * Find the appropriate weight tier for a given weight (legacy + new)
      */
+    public static function findTierForWeight(float $weight, ?string $regionId = 'NG-DEFAULT'): ?self
+    {
+        $tier = self::where('region_id', $regionId)
+            ->where('is_active', true)
+            ->where('min_weight', '<=', $weight)
+            ->where('max_weight', '>=', $weight)
+            ->orderBy('min_weight', 'asc')
+            ->first();
+
+        if (!$tier && $weight > 0) {
+            $tier = self::getActiveRate($regionId);
+        }
+        return $tier;
+    }
+
+    /**
+     * Calculate weight fee: weight × price_per_kg (new model) or legacy base×multiplier
+     */
+    public function calculateWeightFee(float $weight): float
+    {
+        if (isset($this->price_per_kg) && $this->price_per_kg > 0) {
+            return round($weight * (float) $this->price_per_kg, 2);
+        }
+        return (float) ($this->base_service_fee * $this->multiplier);
+    }
+
+    /** @deprecated Use calculateWeightFee */
     public function calculateServiceFee(): float
     {
         return $this->base_service_fee * $this->multiplier;

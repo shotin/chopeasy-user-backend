@@ -9,6 +9,11 @@ use App\Models\Order;
 use App\Events\OrderReadyForPickup;
 use App\Http\Controllers\Controller;
 use App\Models\OrderItem;
+use App\Notifications\NewPickupNotification;
+use App\Services\RiderAssignmentService;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Schema;
 
 class VendorOrderController extends Controller
 {
@@ -111,9 +116,20 @@ class VendorOrderController extends Controller
 
         $order = $orderItem->order;
 
-        if ($order->status === 'ready') {
+        // Self-heal inconsistent state: order marked ready while not all vendor items are ready.
+        $hasUnreadyItems = $order->items()
+            ->whereHas('vendorOrders', fn($q) => $q->where('vendor_id', $user->id))
+            ->where(fn($q) => $q->whereNull('status')->orWhere('status', '!=', 'ready'))
+            ->exists();
+
+        if ($order->status === 'ready' && $hasUnreadyItems) {
+            $order->update(['status' => 'pending']);
+            $order->refresh();
+        }
+
+        if (in_array($order->status, ['ready', 'delivered', 'completed', 'cancelled'], true)) {
             return response()->json([
-                'message' => 'This order is already marked ready and cannot be updated.',
+                'message' => 'This order can no longer be updated.',
                 'order_status' => $order->status,
                 'item_status'  => $orderItem->status,
                 'order_id'     => $order->id,
@@ -131,7 +147,31 @@ class VendorOrderController extends Controller
 
         if ($allReady) {
             $order->update(['status' => 'ready']);
-            event(new OrderReadyForPickup($order));
+            $assignedRider = app(RiderAssignmentService::class)->assignNearestRider($order);
+
+            if ($assignedRider) {
+                // Avoid hard failure when notifications table is not present.
+                if (Schema::hasTable('notifications')) {
+                    try {
+                        Notification::send($assignedRider, new NewPickupNotification($order->fresh()));
+                    } catch (\Throwable $e) {
+                        Log::warning('Failed to persist pickup notification; falling back to event.', [
+                            'order_id' => $order->id,
+                            'rider_id' => $assignedRider->id ?? null,
+                            'error' => $e->getMessage(),
+                        ]);
+                        event(new OrderReadyForPickup($order));
+                    }
+                } else {
+                    Log::warning('notifications table missing; using pickup event fallback.', [
+                        'order_id' => $order->id,
+                        'rider_id' => $assignedRider->id ?? null,
+                    ]);
+                    event(new OrderReadyForPickup($order));
+                }
+            } else {
+                event(new OrderReadyForPickup($order));
+            }
         } else {
             $order->update(['status' => 'pending']);
         }

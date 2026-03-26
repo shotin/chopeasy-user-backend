@@ -24,8 +24,7 @@ class PaymentController extends Controller
         $response = Http::withToken(env('PAYSTACK_SECRET_KEY'))
             ->post(env('PAYSTACK_PAYMENT_URL') . '/transaction/initialize', [
                 'email'        => $user->email,
-                'amount'       => $amountInKobo,
-                // redirect straight to your frontend instead of hitting backend callback
+                'amount'       => $amountInKobo,               
                 'callback_url' => config('app.frontend_url') . "/payment-success",
                 'metadata'     => [
                     'cancel_action' => config('app.frontend_url') . "/payment-failed",

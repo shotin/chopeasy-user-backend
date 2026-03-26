@@ -3,9 +3,13 @@
 namespace App\Http\Controllers\v1\Users;
 
 use App\Http\Controllers\Controller;
+use App\Models\AgentEarning;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\OrderStatusLog;
 use App\Models\Transaction;
+use App\Models\User;
+use App\Services\RiderAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -46,7 +50,7 @@ class OrderController extends Controller
     {
         $request->validate([
             'payment_type' => 'required|in:outright,daily,weekly,monthly',
-             'delivery_address' => 'required|string|max:255',
+            'delivery_address' => 'required|string|max:255',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|integer',
             'items.*.name' => 'required|string|max:255',
@@ -128,12 +132,13 @@ class OrderController extends Controller
                 ]);
             }
 
-            // Create main order
+            // Create main order (attach agent if customer was referred)
             $order = Order::create([
                 'user_id' => $user->id,
+                'agent_id' => $user->referred_by_agent_id,
                 'order_number' => 'ORD-' . strtoupper(Str::random(8)),
                 'total_amount' => $totalAmount,
-                'status' => 'ongoing',
+                'status' => 'pending',
                 'payment_type' => $request->payment_type,
                 'payment_status' => $request->payment_type === 'outright' ? 'paid' : 'installment',
                 'amount_paid' => $amountPaid,
@@ -141,6 +146,8 @@ class OrderController extends Controller
                 'next_due_date' => $nextDueDate,
                 'vendor_order_code' => $mainVendorOrderCode,
                 'delivery_address' => $request->delivery_address,
+                'delivery_latitude' => $user->latitude,
+                'delivery_longitude' => $user->longitude,
             ]);
 
             // Save order items + vendor_orders rows
@@ -164,10 +171,35 @@ class OrderController extends Controller
                 DB::table('vendor_orders')->insert([
                     'vendor_id' => $item['vendor_id'],
                     'order_item_id' => $orderItem->id,
-                    'vendor_order_code' => $mainVendorOrderCode, // same code for all vendors in this order
+                    'vendor_order_code' => $mainVendorOrderCode,
                     'created_at' => now(),
                     'updated_at' => now(),
                 ]);
+            }
+            $cart = DB::table('carts')->where('user_id', $user->id)->first();
+
+            if ($cart) {
+                DB::table('carts')
+                    ->where('user_id', $user->id)
+                    ->delete();
+            }
+
+            // Agent commission: 10% of order amount when customer was referred by an agent
+            if ($order->agent_id) {
+                $commissionPercent = 10;
+                $commissionAmount = round($totalAmount * ($commissionPercent / 100), 2);
+                AgentEarning::create([
+                    'agent_id' => $order->agent_id,
+                    'order_id' => $order->id,
+                    'order_amount' => $totalAmount,
+                    'commission_percent' => $commissionPercent,
+                    'amount' => $commissionAmount,
+                    'status' => 'credited',
+                ]);
+                $agent = User::find($order->agent_id);
+                if ($agent) {
+                    $agent->increment('main_wallet', $commissionAmount);
+                }
             }
 
             DB::commit();
@@ -359,9 +391,21 @@ class OrderController extends Controller
         }
 
         $perPage = $request->query('per_page', 10);
+        $statusGroup = strtolower((string) $request->query('status_group', ''));
+        $status = strtolower((string) $request->query('status', ''));
 
-        $orders = Order::where('user_id', $user->id)
-            ->with('items')
+        $ordersQuery = Order::where('user_id', $user->id)->with('items');
+
+        if ($statusGroup === 'ongoing') {
+            // Active orders for customer-side delivery tracking.
+            $ordersQuery->whereIn('status', ['pending', 'ready', 'ongoing']);
+        } elseif ($statusGroup === 'delivered') {
+            $ordersQuery->where('status', 'delivered');
+        } elseif (!empty($status)) {
+            $ordersQuery->where('status', $status);
+        }
+
+        $orders = $ordersQuery
             ->latest()
             ->paginate($perPage);
 
@@ -375,6 +419,29 @@ class OrderController extends Controller
             ],
         ]);
     }
+
+    public function confirmDelivery(Order $order)
+    {
+        if ($order->status !== 'ongoing') {
+            return response()->json([
+                'message' => 'Order cannot be confirmed yet'
+            ], 400);
+        }
+
+        $order->update([
+            'status' => 'delivered',
+            'completed_at' => now(),
+        ]);
+
+        // release rider payout
+        // update vendor stats
+        // trigger notifications
+
+        return response()->json([
+            'message' => 'Order confirmed successfully'
+        ]);
+    }
+
 
     public function getOrderDetails($orderId, Request $request)
     {
@@ -443,12 +510,12 @@ class OrderController extends Controller
         $startDate = $request->query('start_date');
         $endDate = $request->query('end_date');
 
-        $ordersQuery = Order::with(['user', 'shippingAddress'])
+        $ordersQuery = Order::with(['user', 'shippingAddress', 'vendorOrders.vendor'])
             ->when($search, function ($query, $search) {
                 $query->where(function ($q) use ($search) {
                     $q->where('order_number', 'like', "%$search%")
                         ->orWhereHas('user', function ($userQuery) use ($search) {
-                            $userQuery->where('firstname', 'like', "%$search%")
+                            $userQuery->where('fullname', 'like', "%$search%")
                                 ->orWhere('email', 'like', "%$search%");
                         });
                 });
@@ -465,12 +532,25 @@ class OrderController extends Controller
         $formattedOrders = $orders->map(function ($order) {
             $customer = optional($order->shipping_address_snapshot)['first_name'] . ' ' .
                 optional($order->shipping_address_snapshot)['last_name'];
+            $vendorNames = $order->vendorOrders
+                ->map(fn($vendorOrder) => $vendorOrder->vendor?->store_name ?? $vendorOrder->vendor?->fullname)
+                ->filter()
+                ->unique()
+                ->values();
+            $vendorLabel = null;
+            if ($vendorNames->count() === 1) {
+                $vendorLabel = $vendorNames->first();
+            } elseif ($vendorNames->count() > 1) {
+                $vendorLabel = "Multiple ({$vendorNames->count()})";
+            }
 
             return [
                 'id' => $order->id,
                 'order_number' => $order->order_number,
                 'date' => $order->created_at,
-                'customer' => trim($customer) ?: optional($order->user)->firstname,
+                'customer' => trim($customer) ?: optional($order->user)->fullname,
+                'vendor' => $vendorLabel,
+                'items_count' => (int) ($order->item_count ?? 0),
                 'total' => $order->total_amount,
                 'status' => $order->status,
                 'payment_status' => $order->payment_status,
@@ -508,7 +588,8 @@ class OrderController extends Controller
                 'items',
                 'user',
                 'shippingAddress',
-                'statusLogs'
+                'statusLogs',
+                'vendorOrders.vendor',
             ])->findOrFail($orderId);
 
             $shipping = $order->shipping_address_snapshot ?? [];
@@ -520,6 +601,12 @@ class OrderController extends Controller
                 'payment_status' => $order->payment_status,
                 'created_at' => $order->created_at->toDateTimeString(),
                 'notes' => $order->note ?? null,
+                'items_count' => (int) ($order->item_count ?? $order->items->sum('quantity')),
+                'vendors' => $order->vendorOrders
+                    ->map(fn($vendorOrder) => $vendorOrder->vendor?->store_name ?? $vendorOrder->vendor?->fullname)
+                    ->filter()
+                    ->unique()
+                    ->values(),
 
                 'order_items' => $order->items->map(function ($item) {
                     return [
@@ -548,9 +635,10 @@ class OrderController extends Controller
                 ],
 
                 'customer' => [
-                    'name' => $customerName ?: optional($order->user)->firstname,
+                    'name' => $customerName ?: optional($order->user)->fullname,
                     'email' => $shipping['email'] ?? optional($order->user)->email,
-                    'phone' => $shipping['phone_number'] ?? optional($order->user)->phone_number,
+                    'phone' => $shipping['phone_number'] ?? optional($order->user)->phoneno,
+                    'address' => $order->user->address ?? null,
                     'registered' => $order->user_id ? 'Yes' : 'No',
                 ],
 
@@ -573,6 +661,34 @@ class OrderController extends Controller
             ];
 
             return response()->json(['order' => $response]);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'error' => true,
+                'message' => 'Order not found',
+            ], 404);
+        }
+    }
+
+    public function updateOrderStatusForAdmin(Request $request, $orderId)
+    {
+        $request->validate(['status' => 'required|in:pending,confirmed,processing,delivered,cancelled,ongoing,completed']);
+
+        try {
+            $order = Order::findOrFail($orderId);
+            $order->status = $request->status;
+            $order->save();
+
+            OrderStatusLog::create([
+                'order_id' => $order->id,
+                'status' => $request->status,
+                'message' => 'Status updated by admin',
+                'fulfilled_at' => now(),
+            ]);
+
+            return response()->json([
+                'message' => 'Order status updated successfully',
+                'data' => ['id' => $order->id, 'order_number' => $order->order_number, 'status' => $order->status],
+            ]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json([
                 'error' => true,
@@ -636,9 +752,10 @@ class OrderController extends Controller
         $user->main_wallet -= $totalAmount;
         $user->save();
 
-        // Create new order
+        // Create new order (attach agent if customer was referred)
         $newOrder = Order::create([
             'user_id'          => $user->id,
+            'agent_id'         => $user->referred_by_agent_id,
             'payment_type'     => $request->payment_type,
             'total_amount'     => $totalAmount,
             'amount_paid'      => $totalAmount,
@@ -647,7 +764,7 @@ class OrderController extends Controller
             'remaining_amount' => 0,
             'payment_status'   => 'paid',
             'next_due_date'    => null,
-            'status'           => 'ongoing',
+            'status'           => 'pending',
         ]);
 
         // Copy items
@@ -673,6 +790,24 @@ class OrderController extends Controller
             'description'        => "Reorder placed successfully for Order #{$oldOrder->order_number}",
         ]);
 
+        // Agent commission on reorder
+        if ($newOrder->agent_id) {
+            $commissionPercent = 10;
+            $commissionAmount = round($totalAmount * ($commissionPercent / 100), 2);
+            AgentEarning::create([
+                'agent_id' => $newOrder->agent_id,
+                'order_id' => $newOrder->id,
+                'order_amount' => $totalAmount,
+                'commission_percent' => $commissionPercent,
+                'amount' => $commissionAmount,
+                'status' => 'credited',
+            ]);
+            $agent = User::find($newOrder->agent_id);
+            if ($agent) {
+                $agent->increment('main_wallet', $commissionAmount);
+            }
+        }
+
         return response()->json([
             'message'      => 'Reorder successful',
             'order'        => $newOrder->load('items'),
@@ -689,9 +824,22 @@ class OrderController extends Controller
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
+        // Catch-up assignment for orders that became ready before assignment logic ran.
+        // This keeps available-pickups populated with rider-specific orders.
+        $assignmentService = app(RiderAssignmentService::class);
+        $unassignedReadyOrders = Order::where('status', 'ready')
+            ->whereNull('accepted_by')
+            ->latest()
+            ->take(50)
+            ->get();
+
+        foreach ($unassignedReadyOrders as $readyOrder) {
+            $assignmentService->assignNearestRider($readyOrder);
+        }
+
         $orders = Order::with(['items.vendorOrders.vendor', 'user'])
             ->where('status', 'ready')
-            ->whereNull('accepted_by')
+            ->where('accepted_by', $rider->id)
             ->get()
             ->map(function ($order) {
                 // get vendor from first vendorOrder
@@ -705,11 +853,15 @@ class OrderController extends Controller
                     'vendor_name'   => $vendor->fullname ?? null,
                     'vendor_phone'  => $vendor->phoneno ?? null,
                     'pickup_address' => $vendor->address ?? null,
+                    'pickup_latitude' => $vendor->latitude ?? null,
+                    'pickup_longitude' => $vendor->longitude ?? null,
 
                     // Customer details
                     'customer_name'  => $order->user->fullname ?? null,
                     'customer_phone' => $order->user->phoneno ?? null,
                     'dropoff_address' => $order->delivery_address,
+                    'delivery_latitude' => $order->delivery_latitude,
+                    'delivery_longitude' => $order->delivery_longitude,
 
                     'status'      => $order->status,
                     'accepted_by' => $order->accepted_by,
@@ -746,7 +898,10 @@ class OrderController extends Controller
 
         $order = Order::where('id', $orderId)
             ->where('status', 'ready')
-            ->whereNull('accepted_by')
+            ->where(function ($q) use ($rider) {
+                $q->whereNull('accepted_by')
+                    ->orWhere('accepted_by', $rider->id);
+            })
             ->first();
 
         if (!$order) {
@@ -775,11 +930,14 @@ class OrderController extends Controller
 
         $orders = Order::with(['items.vendorOrders.vendor', 'user']) // include vendor + customer
             ->where('accepted_by', $rider->id)
-            ->whereIn('status', ['ready', 'ongoing'])
+            ->whereIn('status', ['ongoing', 'delivered'])
             ->get()
             ->map(function ($order) {
-                // assuming one vendor per order, else you can collect() multiple vendors
-                $vendor = optional($order->items->first()->vendorOrders->first()->vendor);
+                // Find the first available vendor safely across all order items.
+                $vendorOrder = $order->items
+                    ->flatMap(fn($item) => $item->vendorOrders ?? collect())
+                    ->first();
+                $vendor = optional(optional($vendorOrder)->vendor);
 
                 return [
                     'id'            => $order->id,
@@ -788,10 +946,14 @@ class OrderController extends Controller
                     'vendor_name'   => $vendor->fullname ?? null,
                     'vendor_phone'  => $vendor->phoneno ?? null,
                     'vendor_address' => $vendor->address ?? null,
+                    'pickup_latitude' => $vendor->latitude ?? null,
+                    'pickup_longitude' => $vendor->longitude ?? null,
                     // customer details
                     'customer_name' => $order->user->fullname ?? null,
                     'customer_phone' => $order->user->phoneno ?? null,
                     'customer_address' => $order->delivery_address,
+                    'delivery_latitude' => $order->delivery_latitude,
+                    'delivery_longitude' => $order->delivery_longitude,
                     // order meta
                     'status'        => $order->status,
                     'accepted_by'   => $order->accepted_by,

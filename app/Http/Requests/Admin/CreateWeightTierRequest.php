@@ -14,10 +14,11 @@ class CreateWeightTierRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'min_weight' => 'required|numeric|min:0',
-            'max_weight' => 'required|numeric|gt:min_weight',
-            'multiplier' => 'required|integer|min:1',
-            'base_service_fee' => 'required|numeric|min:0',
+            'price_per_kg' => 'required|numeric|min:0',  // ₦ per kg (e.g. 90)
+            'min_weight' => 'nullable|numeric|min:0',
+            'max_weight' => 'nullable|numeric',
+            'multiplier' => 'nullable|integer|min:1',
+            'base_service_fee' => 'nullable|numeric|min:0',
             'region_id' => 'required|string|max:50',
             'is_active' => 'boolean',
         ];
@@ -26,12 +27,9 @@ class CreateWeightTierRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'min_weight.required' => 'Minimum weight is required',
-            'max_weight.required' => 'Maximum weight is required',
-            'max_weight.gt' => 'Maximum weight must be greater than minimum weight',
-            'multiplier.required' => 'Multiplier is required',
-            'multiplier.min' => 'Multiplier must be at least 1',
-            'base_service_fee.required' => 'Base service fee is required',
+            'price_per_kg.required' => 'Price per kg is required',
+            'price_per_kg.min' => 'Price per kg must be at least 0',
+            'region_id.required' => 'Region ID is required',
         ];
     }
 }

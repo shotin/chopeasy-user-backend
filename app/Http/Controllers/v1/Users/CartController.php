@@ -147,11 +147,11 @@ class CartController extends Controller
                 'vendor_product_item_id' => $vendorProductItem?->id, // Reference to local pricing
             ];
         } catch (\Throwable $e) {
-            Log::error('Error fetching product details', [
-                'product_id' => $productId,
-                'vendor_id' => $vendorId,
-                'error' => $e->getMessage()
-            ]);
+            // Log::error('Error fetching product details', [
+            //     'product_id' => $productId,
+            //     'vendor_id' => $vendorId,
+            //     'error' => $e->getMessage()
+            // ]);
             return null;
         }
     }

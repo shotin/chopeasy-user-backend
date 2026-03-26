@@ -62,6 +62,7 @@ return [
 
     'google_maps' => [
         'api_key' => env('GOOGLE_MAPS_API_KEY'),
+        'rider_assignment_radius_km' => env('RIDER_ASSIGNMENT_RADIUS_KM', 12),
     ],
 
 ];

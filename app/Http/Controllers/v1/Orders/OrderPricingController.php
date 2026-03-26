@@ -171,6 +171,7 @@ class OrderPricingController extends Controller
                 'data' => [
                     'base_charge' => $config->base_charge,
                     'service_charge_per_item' => $config->service_charge,
+                    'service_fee_percent' => $config->service_fee_percent,
                     'charge_per_km' => $config->charge_per_distance,
                     'weight_tiers' => $weightTiers->map(function ($tier) {
                         return [

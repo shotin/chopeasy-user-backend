@@ -211,9 +211,9 @@ class AuthController extends Controller
             ->withCount('orders')
             ->when($search, function ($query, $search) {
                 $query->where(function ($q) use ($search) {
-                    $q->where('firstname', 'like', "%$search%")
-                        ->orWhere('lastname', 'like', "%$search%")
-                        ->orWhere('email', 'like', "%$search%");
+                    $q->where('fullname', 'like', "%$search%")
+                        ->orWhere('email', 'like', "%$search%")
+                        ->orWhere('store_name', 'like', "%$search%");
                 });
             })
             ->when($status, function ($query, $status) {
@@ -231,13 +231,18 @@ class AuthController extends Controller
         $users = $usersQuery->paginate($perPage);
 
         $formatted = $users->map(function ($user) {
+            $role = ucfirst($user->user_type ?? 'customer');
+            $status = $user->is_active ? 'active' : 'blocked';
             return [
-                'id' => $user->id,
-                'name' => $user->firstname . ' ' . $user->lastname,
+                'id' => (string) $user->id,
+                'name' => $user->fullname ?? $user->email,
                 'email' => $user->email,
+                'role' => $role,
+                'status' => $status,
+                'created_at' => $user->created_at->format('Y-m-d'),
                 'orders_count' => $user->orders_count,
                 'is_verified' => $user->is_verified ? 'Verified' : 'Unverified',
-                'is_active' => $user->is_active ? 'Active' : 'Inactive',
+                'is_active' => $user->is_active,
             ];
         });
 
@@ -256,29 +261,47 @@ class AuthController extends Controller
     {
         try {
             $user = User::with([
-                'orders' => fn($q) => $q->latest(),
-                'shippingAddresses',
+                'orders' => fn($q) => $q->with('items')->latest(),
             ])->withCount('orders')->findOrFail($id);
 
             $totalSpent = $user->orders->sum('total_amount');
             $avgOrderValue = $user->orders->avg('total_amount');
+            $totalItems = $user->orders->reduce(function ($sum, $order) {
+                $items = $order->item_count;
+                if ($items === null) {
+                    $items = $order->items ? $order->items->sum('quantity') : 0;
+                }
+                return $sum + (int) $items;
+            }, 0);
             $lastOrder = $user->orders->first();
             $lastOrderDate = optional($lastOrder)->created_at;
             // $customerId = '' . str_pad($user->id, 4, '0', STR_PAD_LEFT);
+
+            $address = [
+                'company' => null,
+                'line1' => $user->address ?? null,
+                'line2' => null,
+                'city' => $user->lga ?? null,
+                'state' => $user->state ?? null,
+                'country' => $user->country ?? null,
+            ];
+            $hasAddress = collect($address)->filter(fn($val) => !empty($val))->isNotEmpty();
 
             return response()->json([
                 'customer' => [
                     // 'id' => $user->id,
                     'customer_id' => $user->id,
-                    'full_name' => $user->firstname . ' ' . $user->lastname,
+                    'address' => $user->address,
+                    'full_name' => $user->fullname ?? $user->email,
                     'email' => $user->email,
-                    'phone' => $user->phone_number,
+                    'phone' => $user->phoneno,
                     'verified' => $user->is_verified ? 'Verified' : 'Unverified',
                     'joined_at' => $user->created_at->format('F d, Y'),
                     'note' => $user->note ?? "No notes available.",
                 ],
                 'metrics' => [
                     'total_orders' => $user->orders_count,
+                    'total_items' => (int) $totalItems,
                     'total_spent' => $totalSpent,
                     'avg_order_value' => round($avgOrderValue, 2),
                     'last_order_date' => $lastOrderDate?->format('M d, Y'),
@@ -293,16 +316,7 @@ class AuthController extends Controller
                         'status' => $order->status,
                     ];
                 }),
-                'address' => optional($user->shippingAddresses->first(), function ($addr) {
-                    return [
-                        'company' => $addr->business_name ?? 'N/A',
-                        'line1' => $addr->address_line_1,
-                        'line2' => $addr->address_line_2,
-                        'city' => $addr->city,
-                        'state' => $addr->state,
-                        'country' => $addr->country,
-                    ];
-                }),
+                'address' => $hasAddress ? $address : null,
             ]);
         } catch (ModelNotFoundException $e) {
             return response()->json([
@@ -353,7 +367,7 @@ class AuthController extends Controller
                 }
 
                 if ($request->filled('storePhoto')) {
-                    $user->store_image = ImageKitHelper::uploadBase64Image(
+                    $user->store_image = ImageKitHelper::uploadFile(
                         $request->storePhoto,
                         'vendor_store_' . $user->id . '_' . time()
                     );
@@ -364,7 +378,7 @@ class AuthController extends Controller
 
             case 'customer':
                 if ($request->filled('userImage')) {
-                    $user->image = ImageKitHelper::uploadBase64Image(
+                    $user->image = ImageKitHelper::uploadFile(
                         $request->userImage,
                         'customer_profile_' . $user->id . '_' . time()
                     );
@@ -377,7 +391,7 @@ class AuthController extends Controller
                 }
 
                 if ($request->filled('idDocument')) {
-                    $user->id_document = ImageKitHelper::uploadBase64Image(
+                    $user->id_document = ImageKitHelper::uploadFile(
                         $request->idDocument,
                         'rider_id_' . $user->id . '_' . time()
                     );
@@ -391,5 +405,32 @@ class AuthController extends Controller
             'message' => 'Profile updated successfully',
             'user'    => $user
         ]);
+    }
+
+    /**
+     * Toggle user active/blocked status (admin only)
+     */
+    public function toggleUserStatus($id)
+    {
+        try {
+            $user = User::findOrFail($id);
+            $user->is_active = !$user->is_active;
+            $user->save();
+
+            $status = $user->is_active ? 'active' : 'blocked';
+            return response()->json([
+                'message' => 'User status updated successfully',
+                'data' => [
+                    'id' => (string) $user->id,
+                    'name' => $user->fullname ?? $user->email,
+                    'email' => $user->email,
+                    'role' => ucfirst($user->user_type ?? 'customer'),
+                    'status' => $status,
+                    'created_at' => $user->created_at->format('Y-m-d'),
+                ],
+            ]);
+        } catch (ModelNotFoundException $e) {
+            return response()->json(['error' => true, 'message' => 'User not found'], 404);
+        }
     }
 }

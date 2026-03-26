@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Log;
 
 class VendorProductController extends Controller
 {
@@ -20,7 +21,7 @@ class VendorProductController extends Controller
     public function listVendorCategories(Request $request)
     {
         try {
-            $categoryIds = VendorProduct::distinct()
+            $categoryIds = VendorProductItem::distinct()
                 ->pluck('category_id')
                 ->filter()
                 ->values();
@@ -36,7 +37,6 @@ class VendorProductController extends Controller
                 ->post(config('services.inventory.url') . '/retail/categories/bulk', [
                     'category_ids' => $categoryIds->toArray(),
                 ]);
-
             if (!$response->successful()) {
                 return response()->json([
                     'error' => 'Failed to fetch category details from inventory',
@@ -58,6 +58,55 @@ class VendorProductController extends Controller
             return response()->json([
                 'categories' => $formattedCategories,
                 'total' => $formattedCategories->count(),
+            ], 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Server error while fetching vendor categories',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+       public function listVendorUnits(Request $request)
+    {
+        try {
+            $categoryIds = VendorProductItem::distinct()
+                ->pluck('uom')
+                ->filter()
+                ->values();
+
+            if ($categoryIds->isEmpty()) {
+                return response()->json([
+                    'uom' => [],
+                    'message' => 'No uom found'
+                ], 200);
+            }
+
+            $response = Http::withToken(config('services.inventory.api_token'))
+                ->post(config('services.inventory.url') . '/retail/uom/bulk', [
+                    'uoms' => $categoryIds->toArray(),
+                ]);
+            if (!$response->successful()) {
+                return response()->json([
+                    'error' => 'Failed to fetch uom details from inventory',
+                    'message' => $response->json()['message'] ?? 'Unknown error'
+                ], $response->status());
+            }
+
+            $uom = $response->json()['uom'] ?? [];
+
+            $formattedUom = collect($uom)->map(function ($category) {
+                return [
+                    'id' => $category['id'],
+                    'name' => $category['name'],
+                    'code' => $category['code'] ?? null,
+                    'description' => $category['description'] ?? null,
+                ];
+            })->values();
+
+            return response()->json([
+                'uom' => $uom,
+                'total' => $formattedUom->count(),
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -145,71 +194,200 @@ class VendorProductController extends Controller
     /**
      * List all vendors with formatted details
      */
-    public function listVendors(Request $request)
-    {
-        try {
-            // Determine page size from query param or default to 10
-            $perPage = $request->get('per_page', 10);
+    // public function listVendors(Request $request)
+    // {
+    //     try {
+    //         // Determine page size from query param or default to 10
+    //         $perPage = $request->get('per_page', 10);
 
-            // Paginate vendors instead of fetching all
-            $vendors = User::where('user_type', 'vendor')
-                ->where('is_active', 1)
-                ->leftJoin('vendor_profiles', 'users.id', '=', 'vendor_profiles.vendor_id')
-                ->select([
-                    'users.id',
-                    'users.fullname',
-                    'users.address',
-                    'users.state',
-                    'users.country',
-                    'users.is_verified',
-                    'users.created_at',
-                    'users.store_name',
-                    'users.store_image',
-                    'users.cac_certificate',
-                    'vendor_profiles.description',
-                    'vendor_profiles.store_type',
-                    'vendor_profiles.delivery_time',
-                    'vendor_profiles.logo',
-                ])
-                ->paginate($perPage);
+    //         // Paginate vendors instead of fetching all
+    //         $vendors = User::where('user_type', 'vendor')
+    //             ->where('is_active', 1)
+    //             ->leftJoin('vendor_profiles', 'users.id', '=', 'vendor_profiles.vendor_id')
+    //             ->select([
+    //                 'users.id',
+    //                 'users.fullname',
+    //                 'users.address',
+    //                 'users.state',
+    //                 'users.country',
+    //                 'users.is_verified',
+    //                 'users.created_at',
+    //                 'users.store_name',
+    //                 'users.store_image',
+    //                 'users.cac_certificate',
+    //                 'vendor_profiles.description',
+    //                 'vendor_profiles.store_type',
+    //                 'vendor_profiles.delivery_time',
+    //                 'vendor_profiles.logo',
+    //             ])
+    //             ->paginate($perPage);
 
-            // Map the paginated collection
-            $vendors->getCollection()->transform(function ($vendor) {
-                $reviews = DB::table('product_reviews')
-                    ->where('user_id', $vendor->id)
-                    ->select(DB::raw('AVG(rating) as average_rating, COUNT(*) as review_count'))
-                    ->first();
+    //         // Map the paginated collection
+    //         $vendors->getCollection()->transform(function ($vendor) {
+    //             $reviews = DB::table('product_reviews')
+    //                 ->where('user_id', $vendor->id)
+    //                 ->select(DB::raw('AVG(rating) as average_rating, COUNT(*) as review_count'))
+    //                 ->first();
 
-                return [
-                    'id' => $vendor->id,
-                    'name' => $vendor->fullname,
-                    'is_verified' => $vendor->is_verified ? 'Verified' : 'Not Verified',
-                    'description' => $vendor->description ?? 'Fresh produce and organic groceries',
-                    'store_type' => $vendor->store_type ?? 'Grocery Store',
-                    'distance' => '0.5km', // Replace with geolocation logic
-                    'rating' => round($reviews->average_rating ?? 0, 1),
-                    'reviews' => $reviews->review_count ?? 0,
-                    'delivery_time' => $vendor->delivery_time ?? '15-30 min',
-                    'address' => $vendor->address,
-                    'state' => $vendor->state,
-                    'country' => $vendor->country,
-                    'logo' => $vendor->image,
-                    'store_name' => $vendor->store_name,
-                    'logo' => $vendor->store_image,
-                    'cac' => $vendor->cac_certificate,
-                    'created_at' => $vendor->created_at->format('Y-m-d H:i:s'),
+    //             return [
+    //                 'id' => $vendor->id,
+    //                 'name' => $vendor->fullname,
+    //                 'is_verified' => $vendor->is_verified ? 'Verified' : 'Not Verified',
+    //                 'description' => $vendor->description ?? 'Fresh produce and organic groceries',
+    //                 'store_type' => $vendor->store_type ?? 'Grocery Store',
+    //                 'distance' => '0.5km', // Replace with geolocation logic
+    //                 'rating' => round($reviews->average_rating ?? 0, 1),
+    //                 'reviews' => $reviews->review_count ?? 0,
+    //                 'delivery_time' => $vendor->delivery_time ?? '15-30 min',
+    //                 'address' => $vendor->address,
+    //                 'state' => $vendor->state,
+    //                 'country' => $vendor->country,
+    //                 'logo' => $vendor->image,
+    //                 'store_name' => $vendor->store_name,
+    //                 'logo' => $vendor->store_image,
+    //                 'cac' => $vendor->cac_certificate,
+    //                 'created_at' => $vendor->created_at->format('Y-m-d H:i:s'),
 
-                ];
+    //             ];
+    //         });
+
+    //         return response()->json($vendors, 200);
+    //     } catch (\Exception $e) {
+    //         return response()->json([
+    //             'error' => 'Server error while fetching vendors',
+    //             'message' => $e->getMessage(),
+    //         ], 500);
+    //     }
+    // }
+
+     public function listVendors(Request $request)
+{
+    try {
+        $perPage = $request->get('per_page', 10);
+        $search = $request->get('search'); // search term
+        $categoryId = $request->get('category'); // category id from frontend
+        $uom = $request->get('uom'); // unit filter
+        $price = $request->get('price'); // price filter
+        $sort = $request->get('sort', 'relevance'); // sorting
+
+        $vendors = User::where('user_type', 'vendor')
+            ->where('is_active', 1)
+            ->leftJoin('vendor_profiles', 'users.id', '=', 'vendor_profiles.vendor_id')
+            ->select([
+                'users.id',
+                'users.fullname',
+                'users.address',
+                'users.state',
+                'users.country',
+                'users.is_verified',
+                'users.created_at',
+                'users.store_name',
+                'users.store_image',
+                'users.cac_certificate',
+                'vendor_profiles.description',
+                'vendor_profiles.store_type',
+                'vendor_profiles.delivery_time',
+                'vendor_profiles.logo',
+            ]);
+
+        // Search by vendor name or store name
+        if ($search) {
+            $vendors->where(function ($q) use ($search) {
+                $q->where('users.fullname', 'like', "%{$search}%")
+                  ->orWhere('users.store_name', 'like', "%{$search}%");
             });
-
-            return response()->json($vendors, 200);
-        } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Server error while fetching vendors',
-                'message' => $e->getMessage(),
-            ], 500);
         }
+
+        // Filter by category/unit/price
+        if ($categoryId || $uom || $price) {
+            $vendors->whereHas('vendorProducts', function ($q) use ($categoryId, $uom, $price) {
+                if ($categoryId && $categoryId !== 'all') {
+                    $q->where('category_id', $categoryId);
+                }
+                if ($uom && $uom !== 'all') {
+                    $q->where('uom', $uom);
+                }
+                if ($price && $price !== 'all') {
+                    if ($price === '5000+') {
+                        $q->where('price', '>=', 5000);
+                    } else {
+                        [$min, $max] = explode('-', $price);
+                        $q->whereBetween('price', [(float)$min, (float)$max]);
+                    }
+                }
+            });
+        }
+
+        // Sorting
+        switch ($sort) {
+            case 'rating':
+                $vendors->withAvg('reviews', 'rating')->orderByDesc('reviews_avg_rating');
+                break;
+case 'price-low':
+    $vendors
+        ->whereExists(function ($q) {
+            $q->select(DB::raw(1))
+              ->from('vendor_product_items')
+              ->whereColumn('vendor_product_items.vendor_id', 'users.id');
+        })
+        ->orderBy(
+            VendorProductItem::selectRaw('MIN(price)')
+                ->whereColumn('vendor_id', 'users.id'),
+            'asc'
+        );
+    break;
+
+
+            case 'price-high':
+                $vendors->leftJoin('vendor_product_items as vpi', 'users.id', '=', 'vpi.vendor_id')
+                        ->orderBy('vpi.price', 'desc');
+                break;
+            case 'delivery':
+                $vendors->orderBy('vendor_profiles.delivery_time', 'asc');
+                break;
+            default:
+                $vendors->orderBy('users.created_at', 'desc');
+        }
+
+        $vendors = $vendors->paginate($perPage);
+
+        $vendors->getCollection()->transform(function ($vendor) {
+            $reviews = DB::table('product_reviews')
+                ->where('user_id', $vendor->id)
+                ->select(DB::raw('AVG(rating) as average_rating, COUNT(*) as review_count'))
+                ->first();
+
+            return [
+                'id' => $vendor->id,
+                'name' => $vendor->fullname,
+                'is_verified' => $vendor->is_verified ? 'Verified' : 'Not Verified',
+                'description' => $vendor->description ?? 'Fresh produce and organic groceries',
+                'store_type' => $vendor->store_type ?? 'Grocery Store',
+                'distance' => '0.5km',
+                'rating' => round($reviews->average_rating ?? 0, 1),
+                'reviews' => $reviews->review_count ?? 0,
+                'delivery_time' => $vendor->delivery_time ?? '15-30 min',
+                'address' => $vendor->address,
+                'state' => $vendor->state,
+                'country' => $vendor->country,
+                'logo' => $vendor->store_image,
+                'store_name' => $vendor->store_name,
+                'cac' => $vendor->cac_certificate,
+                'created_at' => $vendor->created_at->format('Y-m-d H:i:s'),
+            ];
+        });
+
+        return response()->json($vendors, 200);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'error' => 'Server error while fetching vendors',
+            'message' => $e->getMessage(),
+        ], 500);
     }
+}
+
+
 
     /**
      * Update vendor profile

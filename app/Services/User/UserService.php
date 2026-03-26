@@ -3,6 +3,7 @@
 namespace App\Services\User;
 
 use App\Helpers\ImageKitHelper;
+use App\Models\AgentBankDetail;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\User;
@@ -18,6 +19,7 @@ use App\Services\ProductReviewed\RecentlyViewedService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cookie;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class UserService
@@ -41,14 +43,14 @@ class UserService
         // Vendor-specific processing
         if (($data['user_type'] ?? null) === 'vendor') {
             if (!empty($data['store_image'])) {
-                $data['store_image'] = ImageKitHelper::uploadBase64Image(
+                $data['store_image'] = ImageKitHelper::uploadFile(
                     $data['store_image'],
                     'vendor_store_' . time()
                 );
             }
 
             if (!empty($data['cac_certificate'])) {
-                $data['cac_certificate'] = ImageKitHelper::uploadBase64Image(
+                $data['cac_certificate'] = ImageKitHelper::uploadFile(
                     $data['cac_certificate'],
                     'vendor_cac_' . time()
                 );
@@ -88,8 +90,41 @@ class UserService
             }
         }
 
+        // Agent bank details (do not pass to user create)
+        $agentBankData = null;
+        if (($data['user_type'] ?? null) === 'agent') {
+            $agentBankData = [
+                'bank_name' => $data['bank_name'] ?? null,
+                'bank_code' => $data['bank_code'] ?? null,
+                'account_number' => $data['account_number'] ?? null,
+                'account_name' => $data['account_name'] ?? null,
+            ];
+            unset($data['bank_name'], $data['bank_code'], $data['account_number'], $data['account_name']);
+        }
+
+        // Referral: when customer registers with referral_code (agent id), link to agent
+        $referralCode = $data['referral_code'] ?? null;
+        unset($data['referral_code']);
+        if (($data['user_type'] ?? null) === 'customer' && $referralCode) {
+            $agent = User::where('id', $referralCode)->where('user_type', 'agent')->first();
+            if ($agent) {
+                $data['referred_by_agent_id'] = $agent->id;
+            }
+        }
+
         // Create user
         $user = $this->userInterface->create($data);
+
+        if ($agentBankData) {
+            $filledBankFields = array_filter(
+                $agentBankData,
+                fn ($value) => !is_null($value) && $value !== ''
+            );
+
+            if (count($filledBankFields) === 4) {
+                $user->agentBankDetails()->create($agentBankData);
+            }
+        }
 
         // Save vendor profile if vendor
         // if ($data['user_type'] === 'vendor') {
@@ -122,9 +157,19 @@ class UserService
         return $user;
     }
 
-
     public function login(Request $request, array $credentials)
     {
+        $sessionId = $request->cookie('cart_session_id')
+            ?? $request->header('X-Session-ID')
+            ?? $request->input('session_id');
+
+        if (is_string($sessionId)) {
+            $sessionId = trim($sessionId);
+            if ($sessionId === '') {
+                $sessionId = null;
+            }
+        }
+
         if (!$token = Auth::guard('api')->attempt($credentials)) {
             return response()->json([
                 'error' => true,
@@ -134,16 +179,18 @@ class UserService
             ], 401);
         }
 
-        $userId = Auth::guard('api')->user()->id;
-        $user = User::find($userId);
-        $sessionId = $request->cookie('cart_session_id');
+        $user = Auth::guard('api')->user();
 
         if ($sessionId) {
-            $this->mergeGuestSessionToUser($user, $sessionId);
-            app(RecentlyViewedService::class)->mergeSessionViewsToUser($sessionId, $user->id);
+            DB::transaction(function () use ($user, $sessionId) {
+                $this->mergeGuestSessionToUser($user, $sessionId);
+                app(RecentlyViewedService::class)->mergeSessionViewsToUser($sessionId, $user->id);
+            });
         }
+
         $this->mergeGuestOrdersByEmail($user);
         $this->mergeGuestShippingAddressByEmail($user);
+
         if (!$user->is_verified || !$user->can_login) {
             return response()->json([
                 'error' => true,
@@ -153,26 +200,21 @@ class UserService
             ], 403);
         }
 
-        $ip = request()->ip();
-        $geoInfo = $this->geoLocationService->getGeoInfo($ip);
+        // Update login metadata
+        $user->update([
+            'last_login' => now(),
+            'ip_address' => $request->ip(),
+        ]);
 
-        $user->last_login = now();
-        $user->ip_address = $ip;
-        if (is_array($geoInfo)) {
-            $user->continent = $geoInfo['continent_name'] ?? null;
-            $user->country   = $geoInfo['country_name'] ?? null;
-            $user->state     = $geoInfo['state_prov'] ?? null;
-        }
+        $roles = $user->getRoleNames()->toArray();
 
-        $user->save();
-
-        $jsonResponse = JsonResponser::send(false, 'Login successful.', [
+        return JsonResponser::send(false, 'Login successful.', [
             'token' => $token,
-            'user' => $user,
-        ], 200);
-
-        return $jsonResponse->withCookie(cookie()->forget('cart_session_id'));
+            'user'  => $user,
+            'roles' => $roles,
+        ], 200)->withCookie(cookie()->forget('cart_session_id'));
     }
+
 
 
     public function verifyEmail(int $id, string $hash)
@@ -267,18 +309,58 @@ class UserService
     }
 
 
+    // public function mergeGuestSessionToUser(User $user, string $sessionId)
+    // {
+    //     $guestCartItems = Cart::where('session_id', $sessionId)->get();
+    //     foreach ($guestCartItems as $guestItem) {
+    //         $existingItem = Cart::where('user_id', $user->id)
+    //             ->where('product_id', $guestItem->product_id)
+    //             ->whereNull('product_variant_id')
+    //             ->first();
+
+    //         if ($existingItem) {
+    //             $existingItem->quantity += $guestItem->quantity;
+    //             $existingItem->save();
+    //             $guestItem->delete();
+    //         } else {
+    //             $guestItem->update([
+    //                 'user_id' => $user->id,
+    //                 'session_id' => null,
+    //             ]);
+    //         }
+    //     }
+
+    //     Order::where('session_id', $sessionId)->update([
+    //         'user_id' => $user->id,
+    //         'session_id' => null,
+    //     ]);
+
+    //     Cookie::queue(Cookie::forget('cart_session_id'));
+    // }
+
     public function mergeGuestSessionToUser(User $user, string $sessionId)
     {
         $guestCartItems = Cart::where('session_id', $sessionId)->get();
+
         foreach ($guestCartItems as $guestItem) {
-            $existingItem = Cart::where('user_id', $user->id)
-                ->where('product_id', $guestItem->product_id)
-                ->whereNull('product_variant_id')
-                ->first();
+
+            $existingItemQuery = Cart::where('user_id', $user->id)
+                ->where('product_id', $guestItem->product_id);
+
+            if (is_null($guestItem->product_variant_id)) {
+                $existingItemQuery->whereNull('product_variant_id');
+            } else {
+                $existingItemQuery->where('product_variant_id', $guestItem->product_variant_id);
+            }
+
+            $existingItem = $existingItemQuery->first();
 
             if ($existingItem) {
                 $existingItem->quantity += $guestItem->quantity;
+                $existingItem->total_cost =
+                    $existingItem->quantity * $existingItem->price_at_addition;
                 $existingItem->save();
+
                 $guestItem->delete();
             } else {
                 $guestItem->update([
@@ -293,8 +375,18 @@ class UserService
             'session_id' => null,
         ]);
 
-        Cookie::queue(Cookie::forget('cart_session_id'));
+        // Final cleanup: after merge, no cart row should still carry this guest session ID.
+        Cart::where('session_id', $sessionId)
+            ->whereNull('user_id')
+            ->update([
+                'user_id' => $user->id,
+                'session_id' => null,
+            ]);
+
+        // Defensive cleanup for any unexpected leftovers tied to this session.
+        Cart::where('session_id', $sessionId)->delete();
     }
+
 
     private function mergeGuestOrdersByEmail(User $user)
     {

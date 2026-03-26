@@ -68,6 +68,7 @@ class PricingService
 
     /**
      * Execute the core pricing formula
+     * New model: Delivery Fee = Base Fee + (Weight × price_per_kg) + Distance Zone Fee
      */
     private function executeFormula(
         int $itemCount,
@@ -75,23 +76,25 @@ class PricingService
         float $distanceInKm,
         float $vendorSubtotal
     ): array {
-        // TotalCharge = baseCharge + (serviceCharge × itemCount) + (chargePerDistance × distanceInKm) + baseServiceFee(weightRange)
-        
-        $baseCharge = $this->pricingConfig->base_charge;
-        $serviceChargeTotal = $this->pricingConfig->service_charge * $itemCount;
-        $distanceChargeTotal = $this->pricingConfig->charge_per_distance * $distanceInKm;
-        $weightServiceFee = $this->weightTier->calculateServiceFee();
+        $baseFee = (float) $this->pricingConfig->base_charge;
+        $weightFee = $this->weightTier->calculateWeightFee($totalWeight);
+        $serviceFeePercent = (float) ($this->pricingConfig->service_fee_percent ?? 0);
+        $serviceFeeTotal = $vendorSubtotal > 0 ? ($vendorSubtotal * $serviceFeePercent / 100) : 0;
 
-        $totalCharge = $baseCharge + $serviceChargeTotal + $distanceChargeTotal + $weightServiceFee;
+        $zone = RiderPayoutRule::findZoneForDistance($distanceInKm, $this->regionId);
+        $distanceFee = $zone ? $zone->getZoneFee() : 0;
+
+        $totalCharge = $baseFee + $weightFee + $distanceFee;
 
         return [
-            'base_charge' => round($baseCharge, 2),
-            'service_charge_per_item' => round($this->pricingConfig->service_charge, 2),
-            'service_charge_total' => round($serviceChargeTotal, 2),
-            'charge_per_distance' => round($this->pricingConfig->charge_per_distance, 2),
-            'distance_charge_total' => round($distanceChargeTotal, 2),
-            'weight_service_fee' => round($weightServiceFee, 2),
-            'weight_tier_multiplier' => $this->weightTier->multiplier,
+            'base_charge' => round($baseFee, 2),
+            'base_fee' => round($baseFee, 2),
+            'weight_fee' => round($weightFee, 2),
+            'weight_price_per_kg' => $this->weightTier->price_per_kg ?? null,
+            'distance_fee' => round($distanceFee, 2),
+            'distance_zone' => $zone?->zone_name,
+            'service_fee_percent' => round($serviceFeePercent, 2),
+            'service_fee_total' => round($serviceFeeTotal, 2),
             'total_charge' => round($totalCharge, 2),
             'item_count' => $itemCount,
             'total_weight_kg' => $totalWeight,
@@ -106,22 +109,24 @@ class PricingService
     private function calculatePayouts(array $breakdown, float $vendorSubtotal): array
     {
         $totalCharge = $breakdown['total_charge'];
-        
-        // Calculate rider payout
-        $riderPayout = $this->riderPayoutRule 
+        $serviceFeeTotal = $breakdown['service_fee_total'] ?? 0;
+
+        $zone = RiderPayoutRule::findZoneForDistance($breakdown['distance_km'], $this->regionId);
+        $riderPayout = $zone ? $zone->getZoneFee() : ($this->riderPayoutRule
             ? $this->riderPayoutRule->calculatePayout($breakdown['distance_km'], $breakdown['total_weight_kg'])
-            : 0;
+            : 0);
 
         // Vendor gets their items cost
         $vendorPayout = $vendorSubtotal;
 
         // Platform revenue = Total charge - Rider payout
         // (Vendor is paid separately from vendor's subtotal, not from delivery charge)
-        $platformRevenue = $totalCharge - $riderPayout;
+        $platformRevenue = $totalCharge - $riderPayout + $serviceFeeTotal;
 
         // Calculate margin percentage
-        $marginPercentage = $totalCharge > 0 
-            ? round(($platformRevenue / $totalCharge) * 100, 2)
+        $marginBase = $totalCharge + $serviceFeeTotal;
+        $marginPercentage = $marginBase > 0
+            ? round(($platformRevenue / $marginBase) * 100, 2)
             : 0;
 
         return [
@@ -129,7 +134,7 @@ class PricingService
             'vendor_payout' => round($vendorPayout, 2),
             'platform_revenue' => round($platformRevenue, 2),
             'platform_margin_percentage' => $marginPercentage,
-            'total_to_collect_from_customer' => round($totalCharge + $vendorSubtotal, 2),
+            'total_to_collect_from_customer' => round($totalCharge + $vendorSubtotal + $serviceFeeTotal, 2),
         ];
     }
 
@@ -147,11 +152,12 @@ class PricingService
     }
 
     /**
-     * Load weight tier for given weight
+     * Load weight tier - uses getActiveRate for new model (price_per_kg)
      */
     private function loadWeightTier(float $weight): void
     {
-        $this->weightTier = WeightTier::findTierForWeight($weight, $this->regionId);
+        $this->weightTier = WeightTier::findTierForWeight($weight, $this->regionId)
+            ?? WeightTier::getActiveRate($this->regionId);
 
         if (!$this->weightTier) {
             Log::error("No weight tier found for weight: {$weight}kg in region: {$this->regionId}");
@@ -177,11 +183,14 @@ class PricingService
      */
     private function getMetadata(): array
     {
+        $weightRange = isset($this->weightTier->price_per_kg)
+            ? "₦{$this->weightTier->price_per_kg}/kg"
+            : "{$this->weightTier->min_weight}kg - {$this->weightTier->max_weight}kg";
         return [
             'pricing_config_id' => $this->pricingConfig->id,
             'pricing_config_name' => $this->pricingConfig->name,
             'weight_tier_id' => $this->weightTier->id,
-            'weight_tier_range' => "{$this->weightTier->min_weight}kg - {$this->weightTier->max_weight}kg",
+            'weight_tier_range' => $weightRange,
             'rider_payout_rule_id' => $this->riderPayoutRule?->id,
             'region_id' => $this->regionId,
             'calculated_at' => now()->toIso8601String(),

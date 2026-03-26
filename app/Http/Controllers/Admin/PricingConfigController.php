@@ -51,7 +51,13 @@ class PricingConfigController extends Controller
                     ->update(['is_active' => false]);
             }
 
-            $config = PricingConfig::create($request->validated());
+            $data = array_merge($request->validated(), [
+                'service_charge' => $request->input('service_charge', 0),
+                'service_fee_percent' => $request->input('service_fee_percent', 0),
+                'charge_per_distance' => $request->input('charge_per_distance', 0),
+                'currency' => $request->input('currency', 'NGN'),
+            ]);
+            $config = PricingConfig::create($data);
 
             return response()->json([
                 'success' => true,

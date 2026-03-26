@@ -51,6 +51,7 @@ class User extends Authenticatable implements JWTSubject
         'longitude',
         'latitude',
         'vehicle',
+        'referred_by_agent_id',
     ];
 
     protected $hidden = ['password', 'remember_token', 'email_otp'];
@@ -89,4 +90,46 @@ class User extends Authenticatable implements JWTSubject
     {
         return $this->hasMany(Order::class);
     }
+
+    public function vendorProducts()
+{
+    return $this->hasMany(VendorProductItem::class, 'vendor_id');
+}
+
+public function reviews()
+{
+    return $this->hasMany(ProductReview::class, 'user_id');
+}
+
+public function agentBankDetails()
+{
+    return $this->hasOne(AgentBankDetail::class);
+}
+
+public function referredByAgent()
+{
+    return $this->belongsTo(User::class, 'referred_by_agent_id');
+}
+
+public function referredCustomers()
+{
+    return $this->hasMany(User::class, 'referred_by_agent_id');
+}
+
+public function agentEarnings()
+{
+    return $this->hasMany(AgentEarning::class, 'agent_id');
+}
+
+public function agentWithdrawals()
+{
+    return $this->hasMany(AgentWithdrawal::class, 'agent_id');
+}
+
+public function agentOrders()
+{
+    return $this->hasMany(Order::class, 'agent_id');
+}
+
+
 }
