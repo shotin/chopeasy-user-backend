@@ -18,6 +18,8 @@ class CreatePricingConfigRequest extends FormRequest
             'base_charge' => 'required|numeric|min:0',  // Base fee (handling, packaging, dispatch)
             'service_charge' => 'nullable|numeric|min:0',
             'service_fee_percent' => 'nullable|numeric|min:0|max:100',
+            'product_markup_percent' => 'nullable|numeric|min:0|max:100',
+            'vendor_take_percent' => 'nullable|numeric|min:0|max:100',
             'charge_per_distance' => 'nullable|numeric|min:0',
             'referral_bonus_percentage' => 'nullable|numeric|min:0|max:100',
             'region_id' => 'required|string|max:50',

@@ -10,6 +10,9 @@ class AgentEarning extends Model
     protected $fillable = [
         'agent_id',
         'order_id',
+        'earning_type',
+        'referred_user_id',
+        'withdrawal_id',
         'order_amount',
         'commission_percent',
         'amount',
@@ -30,5 +33,15 @@ class AgentEarning extends Model
     public function order(): BelongsTo
     {
         return $this->belongsTo(Order::class);
+    }
+
+    public function withdrawal(): BelongsTo
+    {
+        return $this->belongsTo(AgentWithdrawal::class, 'withdrawal_id');
+    }
+
+    public function referredUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'referred_user_id');
     }
 }

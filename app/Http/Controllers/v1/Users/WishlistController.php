@@ -76,10 +76,30 @@ class WishlistController extends Controller
                 'product_id' => 'required|integer',
             ]);
 
+            // Try both variant and main product endpoints
+            $productId = $request->product_id;
+            
+            // First try to get as variant
             $response = Http::withToken(config('services.inventory.api_token'))
-                ->get(config('services.inventory.url') . "/product/retail/{$request->product_id}");
+                ->get(config('services.inventory.url') . "/product/variant/{$productId}");
 
             if (!$response->successful() || isset($response->json()['error'])) {
+                Log::info('Variant endpoint failed for product ' . $productId . ', trying main product endpoint', [
+                    'status' => $response->status(),
+                    'body' => $response->body()
+                ]);
+                
+                $response = Http::withToken(config('services.inventory.api_token'))
+                    ->get(config('services.inventory.url') . "/product/retail/{$productId}");
+            }
+
+            if (!$response->successful() || isset($response->json()['error'])) {
+                Log::error('Both endpoints failed for product ' . $productId, [
+                    'variant_status' => $response->status(),
+                    'variant_body' => $response->body(),
+                    'retail_status' => $response->status(),
+                    'retail_body' => $response->body()
+                ]);
                 return response()->json(['error' => 'Product does not exist in inventory'], 422);
             }
 
@@ -87,7 +107,7 @@ class WishlistController extends Controller
             $userId = Auth::id();
             $sessionId = $userId ? null : $this->getSessionId($request);
 
-            $exists = Wishlist::where('product_id', $request->product_id)
+            $exists = Wishlist::where('product_id', $productId)
                 ->where(function ($q) use ($userId, $sessionId) {
                     $userId ? $q->where('user_id', $userId) : $q->where('session_id', $sessionId);
                 })->exists();
@@ -99,12 +119,12 @@ class WishlistController extends Controller
             Wishlist::create([
                 'user_id' => $userId,
                 'session_id' => $sessionId,
-                'product_id' => $request->product_id,
+                'product_id' => $productId,
             ]);
 
             return response()->json(['message' => 'Added to wishlist'], 201);
         } catch (Exception $e) {
-            // Log::error('Error adding to wishlist', ['error' => $e->getMessage()]);
+            Log::error('Error adding to wishlist', ['error' => $e->getMessage()]);
             return response()->json(['error' => 'Failed to add to wishlist'], 500);
         }
     }
@@ -149,7 +169,16 @@ class WishlistController extends Controller
                 return [];
             }
 
-            return $response->json()['products'] ?? [];
+            $products = $response->json()['products'] ?? [];
+            
+            // Ensure each product has the correct ID structure for variants
+            return collect($products)->map(function ($product) {
+                // If this is a variant, ensure vendor_product_item_id is set
+                if (isset($product['variant_id']) && !isset($product['vendor_product_item_id'])) {
+                    $product['vendor_product_item_id'] = $product['variant_id'];
+                }
+                return $product;
+            })->toArray();
         } catch (Exception $e) {
             // Log::error('Error fetching product data from inventory', ['error' => $e->getMessage()]);
             return [];

@@ -3,7 +3,6 @@
 namespace App\Services\User;
 
 use App\Helpers\ImageKitHelper;
-use App\Models\AgentBankDetail;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\User;
@@ -32,6 +31,16 @@ class UserService
     {
         $this->userInterface = $userInterface;
         $this->geoLocationService = $geoLocationService;
+    }
+
+    protected function bankRelationName(?string $userType): ?string
+    {
+        return match ($userType) {
+            'agent' => 'agentBankDetails',
+            'vendor' => 'vendorBankDetails',
+            'rider' => 'riderBankDetails',
+            default => null,
+        };
     }
 
     public function register(array $data): User
@@ -90,10 +99,11 @@ class UserService
             }
         }
 
-        // Agent bank details (do not pass to user create)
-        $agentBankData = null;
-        if (($data['user_type'] ?? null) === 'agent') {
-            $agentBankData = [
+        // Bank details (do not pass to user create)
+        $bankRelationName = $this->bankRelationName($data['user_type'] ?? null);
+        $bankData = null;
+        if ($bankRelationName) {
+            $bankData = [
                 'bank_name' => $data['bank_name'] ?? null,
                 'bank_code' => $data['bank_code'] ?? null,
                 'account_number' => $data['account_number'] ?? null,
@@ -102,10 +112,10 @@ class UserService
             unset($data['bank_name'], $data['bank_code'], $data['account_number'], $data['account_name']);
         }
 
-        // Referral: when customer registers with referral_code (agent id), link to agent
+        // Referral: customer, vendor, or rider registers with referral_code (agent user id)
         $referralCode = $data['referral_code'] ?? null;
         unset($data['referral_code']);
-        if (($data['user_type'] ?? null) === 'customer' && $referralCode) {
+        if ($referralCode && in_array(($data['user_type'] ?? null), ['customer', 'vendor', 'rider'], true)) {
             $agent = User::where('id', $referralCode)->where('user_type', 'agent')->first();
             if ($agent) {
                 $data['referred_by_agent_id'] = $agent->id;
@@ -115,14 +125,18 @@ class UserService
         // Create user
         $user = $this->userInterface->create($data);
 
-        if ($agentBankData) {
+        if ($bankData && $bankRelationName) {
             $filledBankFields = array_filter(
-                $agentBankData,
+                $bankData,
                 fn ($value) => !is_null($value) && $value !== ''
             );
 
             if (count($filledBankFields) === 4) {
-                $user->agentBankDetails()->create($agentBankData);
+                $user->{$bankRelationName}()->create($bankData);
+
+                if ($bankRelationName !== 'agentBankDetails') {
+                    $user->agentBankDetails()->delete();
+                }
             }
         }
 

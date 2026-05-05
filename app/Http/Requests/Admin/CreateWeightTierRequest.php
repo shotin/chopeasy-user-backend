@@ -15,6 +15,7 @@ class CreateWeightTierRequest extends FormRequest
     {
         return [
             'price_per_kg' => 'required|numeric|min:0',  // ₦ per kg (e.g. 90)
+            'platform_percentage' => 'nullable|numeric|min:0|max:100',
             'min_weight' => 'nullable|numeric|min:0',
             'max_weight' => 'nullable|numeric',
             'multiplier' => 'nullable|integer|min:1',

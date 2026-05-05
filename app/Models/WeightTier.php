@@ -15,6 +15,7 @@ class WeightTier extends Model
         'multiplier',
         'base_service_fee',
         'price_per_kg',
+        'platform_percentage',
         'region_id',
         'is_active',
     ];
@@ -25,6 +26,7 @@ class WeightTier extends Model
         'multiplier' => 'integer',
         'base_service_fee' => 'decimal:2',
         'price_per_kg' => 'decimal:2',
+        'platform_percentage' => 'decimal:2',
         'is_active' => 'boolean',
     ];
 

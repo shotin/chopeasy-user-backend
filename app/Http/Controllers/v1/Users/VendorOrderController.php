@@ -1,25 +1,31 @@
 <?php
 
-
 namespace App\Http\Controllers\v1\Users;
 
 use Illuminate\Http\Request;
-use App\Models\VendorOrder;
 use App\Models\Order;
 use App\Events\OrderReadyForPickup;
 use App\Http\Controllers\Controller;
 use App\Models\OrderItem;
 use App\Notifications\NewPickupNotification;
 use App\Services\RiderAssignmentService;
+use App\Support\VendorOrderSettlement;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Schema;
 
 class VendorOrderController extends Controller
 {
-    /**
-     * List vendor's completed/paid orders
-     */
+    protected function decodePayload($payload): array
+    {
+        return VendorOrderSettlement::decodePayload($payload);
+    }
+
+    protected function vendorSettlementForOrder(Order $order, float $grossAmount): array
+    {
+        return VendorOrderSettlement::forGross($order, $grossAmount);
+    }
+
     public function vendorOrders(Request $request)
     {
         $user = $request->user();
@@ -34,19 +40,49 @@ class VendorOrderController extends Controller
                 $q->where('vendor_id', $user->id);
             }
         ])
-            ->where('payment_status', 'paid')
+            ->paidForFulfillment()
             ->whereHas('items.vendorOrders', function ($q) use ($user) {
                 $q->where('vendor_id', $user->id);
             })
             ->latest()
-            ->get();
+            ->get()
+            ->map(function ($order) use ($user) {
+                $vendorItems = $order->items->filter(function ($item) use ($user) {
+                    return $item->vendorOrders->where('vendor_id', $user->id)->isNotEmpty();
+                });
+
+                $vendorTotal = $vendorItems->sum(function ($item) {
+                    $snapshot = is_array($item->product_snapshot)
+                        ? $item->product_snapshot
+                        : (json_decode($item->product_snapshot ?? '[]', true) ?: []);
+
+                    $vendorUnitPrice = (float) ($snapshot['vendor_price'] ?? $snapshot['price'] ?? $item->price_at_order ?? 0);
+                    return $vendorUnitPrice * (int) ($item->quantity ?? 0);
+                });
+                $settlement = $this->vendorSettlementForOrder($order, (float) $vendorTotal);
+
+                return [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'status' => $order->status,
+                    'payment_status' => $order->payment_status,
+                    'created_at' => $order->created_at,
+                    'user' => [
+                        'id' => $order->user?->id,
+                        'fullname' => $order->user?->fullname,
+                    ],
+                    'vendor_total_amount' => $settlement['gross_amount'],
+                    'vendor_take_percent' => $settlement['take_percent'],
+                    'vendor_take_amount' => $settlement['take_amount'],
+                    'vendor_net_amount' => $settlement['net_amount'],
+                    'customer_total_amount' => round((float) ($order->total_amount ?? 0), 2),
+                ];
+            })
+            ->values();
 
         return response()->json($orders);
     }
 
-    /**
-     * List items for a single order (expand "View More")
-     */
     public function orderItems(Request $request, $orderId)
     {
         $user = $request->user();
@@ -61,44 +97,44 @@ class VendorOrderController extends Controller
             }
         ])
             ->where('id', $orderId)
+            ->paidForFulfillment()
             ->whereHas('items.vendorOrders', function ($q) use ($user) {
                 $q->where('vendor_id', $user->id);
             })
             ->firstOrFail();
 
-        // Only vendor-specific items
         $vendorItems = $order->items->filter(function ($item) use ($user) {
             return $item->vendorOrders->where('vendor_id', $user->id)->isNotEmpty();
         });
 
-        // Format response: pull from product_snapshot
         $formatted = $vendorItems->map(function ($item) {
             $snapshot = is_array($item->product_snapshot)
                 ? $item->product_snapshot
-                : json_decode($item->product_snapshot, true);
+                : (json_decode($item->product_snapshot ?? '[]', true) ?: []);
+
+            $vendorUnitPrice = (float) ($snapshot['vendor_price'] ?? $snapshot['price'] ?? $item->price_at_order ?? 0);
+            $customerUnitPrice = (float) ($snapshot['customer_price'] ?? $snapshot['price'] ?? $item->price_at_order ?? 0);
 
             return [
-                'id'            => $item->id,
-                'product_id'    => $item->product_id,
-                'quantity'      => $item->quantity,
-                'price'         => $item->price_at_order,
-                'name'          => $snapshot['name'] ?? null,
-                'image'         => $snapshot['image'] ?? null,
-                'snapshot'      => $snapshot,
-
-                // Alias columns properly
+                'id' => $item->id,
+                'product_id' => $item->product_id,
+                'quantity' => $item->quantity,
+                'price' => $vendorUnitPrice,
+                'customer_price' => $customerUnitPrice,
+                'total' => round($vendorUnitPrice * (int) ($item->quantity ?? 0), 2),
+                'name' => $snapshot['name'] ?? null,
+                'image' => $snapshot['image'] ?? null,
+                'snapshot' => $snapshot,
                 'order_item_id' => $item->id ?? null,
-                'item_status'   => $item->status ?? null, // 👈 order_items.status
-                'order_status'  => $item->order->status ?? null,      // 👈 orders.status
+                'item_status' => $item->status ?? null,
+                'order_status' => $item->order->status ?? null,
                 'vendor_orders' => $item->vendorOrders,
             ];
         });
 
         return response()->json($formatted->values());
     }
-    /**
-     * Vendor marks ONE order item as ready
-     */
+
     public function toggleItemReady(Request $request, $orderItemId)
     {
         $user = $request->user();
@@ -116,13 +152,20 @@ class VendorOrderController extends Controller
 
         $order = $orderItem->order;
 
-        // Self-heal inconsistent state: order marked ready while not all vendor items are ready.
-        $hasUnreadyItems = $order->items()
-            ->whereHas('vendorOrders', fn($q) => $q->where('vendor_id', $user->id))
-            ->where(fn($q) => $q->whereNull('status')->orWhere('status', '!=', 'ready'))
+        if (!$order->isPaidForFulfillment()) {
+            return response()->json([
+                'message' => 'This order is not fully paid yet. Items cannot be marked ready.',
+                'order_status' => $order->status,
+                'payment_status' => $order->payment_status,
+            ], 403);
+        }
+
+        // Repair stale rows where orders.status is "ready" but some line items are not ready (multi-vendor bugs).
+        $hasGloballyUnreadyItems = $order->items()
+            ->where(fn ($q) => $q->whereNull('status')->orWhere('status', '!=', 'ready'))
             ->exists();
 
-        if ($order->status === 'ready' && $hasUnreadyItems) {
+        if ($order->status === 'ready' && $hasGloballyUnreadyItems) {
             $order->update(['status' => 'pending']);
             $order->refresh();
         }
@@ -131,56 +174,65 @@ class VendorOrderController extends Controller
             return response()->json([
                 'message' => 'This order can no longer be updated.',
                 'order_status' => $order->status,
-                'item_status'  => $orderItem->status,
-                'order_id'     => $order->id,
+                'item_status' => $orderItem->status,
+                'order_id' => $order->id,
             ], 403);
         }
 
-        // Toggle status
         $newStatus = $orderItem->status === 'ready' ? null : 'ready';
         $orderItem->update(['status' => $newStatus]);
 
-        $allReady = $order->items()
-            ->whereHas('vendorOrders', fn($q) => $q->where('vendor_id', $user->id))
-            ->where(fn($q) => $q->whereNull('status')->orWhere('status', '!=', 'ready'))
-            ->count() === 0;
+        $order->refresh();
 
-        if ($allReady) {
-            $order->update(['status' => 'ready']);
-            $assignedRider = app(RiderAssignmentService::class)->assignNearestRider($order);
+        // Order-level "ready" must mean every line item (every vendor) is ready — never flip global ready for one vendor only.
+        $orderFullyReady = !$order->items()
+            ->where(fn ($q) => $q->whereNull('status')->orWhere('status', '!=', 'ready'))
+            ->exists();
 
-            if ($assignedRider) {
-                // Avoid hard failure when notifications table is not present.
-                if (Schema::hasTable('notifications')) {
-                    try {
-                        Notification::send($assignedRider, new NewPickupNotification($order->fresh()));
-                    } catch (\Throwable $e) {
-                        Log::warning('Failed to persist pickup notification; falling back to event.', [
+        if ($orderFullyReady) {
+            // Move to rider workflow only when nobody has picked up yet.
+            if ($order->status === 'pending') {
+                $order->update(['status' => 'ready']);
+                $order->refresh();
+
+                $assignedRider = app(RiderAssignmentService::class)->assignNearestRider($order->fresh());
+
+                if ($assignedRider) {
+                    if (Schema::hasTable('notifications')) {
+                        try {
+                            Notification::send($assignedRider, new NewPickupNotification($order->fresh()));
+                        } catch (\Throwable $e) {
+                            Log::warning('Failed to persist pickup notification; falling back to event.', [
+                                'order_id' => $order->id,
+                                'rider_id' => $assignedRider->id ?? null,
+                                'error' => $e->getMessage(),
+                            ]);
+                            event(new OrderReadyForPickup($order));
+                        }
+                    } else {
+                        Log::warning('notifications table missing; using pickup event fallback.', [
                             'order_id' => $order->id,
                             'rider_id' => $assignedRider->id ?? null,
-                            'error' => $e->getMessage(),
                         ]);
                         event(new OrderReadyForPickup($order));
                     }
                 } else {
-                    Log::warning('notifications table missing; using pickup event fallback.', [
-                        'order_id' => $order->id,
-                        'rider_id' => $assignedRider->id ?? null,
-                    ]);
                     event(new OrderReadyForPickup($order));
                 }
-            } else {
-                event(new OrderReadyForPickup($order));
             }
-        } else {
+        } elseif ($order->status === 'ready') {
+            // No longer fully ready (unmarked item, etc.) — pull back from rider queue.
             $order->update(['status' => 'pending']);
+            $order->refresh();
         }
 
+        $orderItem->refresh();
+
         return response()->json([
-            'message'      => $newStatus === 'ready' ? 'Item marked ready' : 'Item unmarked',
+            'message' => $newStatus === 'ready' ? 'Item marked ready' : 'Item unmarked',
             'order_status' => $order->status,
-            'item_status'  => $orderItem->status,
-            'order_id'     => $order->id,
+            'item_status' => $orderItem->status,
+            'order_id' => $order->id,
         ]);
     }
 }

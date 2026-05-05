@@ -5,31 +5,16 @@ namespace App\Http\Controllers\v1\Orders;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\OrderEstimateRequest;
 use App\Services\PricingService;
-use Illuminate\Http\JsonResponse;
 use Exception;
+use Illuminate\Http\JsonResponse;
 
-/**
- * Order Pricing Controller
- * Handles order estimation and pricing calculations for users
- */
 class OrderPricingController extends Controller
 {
-    /**
-     * Estimate order cost without persisting data
-     * 
-     * This endpoint calculates the total cost breakdown for an order
-     * based on items, weight, and delivery distance.
-     * 
-     * @param OrderEstimateRequest $request
-     * @return JsonResponse
-     */
     public function estimate(OrderEstimateRequest $request): JsonResponse
     {
         try {
-            // Get calculated values from request
             $calculated = $request->getCalculatedValues();
-            
-            // Calculate distance using Haversine formula
+
             $distance = PricingService::calculateDistance(
                 $request->pickup_latitude,
                 $request->pickup_longitude,
@@ -37,15 +22,14 @@ class OrderPricingController extends Controller
                 $request->delivery_longitude
             );
 
-            // Initialize pricing service
             $regionId = $request->input('region_id', 'NG-DEFAULT');
             $pricingService = new PricingService($regionId);
 
-            // Calculate pricing
             $pricing = $pricingService->calculateOrderPricing(
                 $calculated['item_count'],
                 $calculated['total_weight'],
                 $distance,
+                $calculated['customer_product_subtotal'],
                 $calculated['vendor_subtotal']
             );
 
@@ -57,13 +41,13 @@ class OrderPricingController extends Controller
                         'item_count' => $calculated['item_count'],
                         'total_weight_kg' => $calculated['total_weight'],
                         'distance_km' => $distance,
+                        'product_subtotal' => $calculated['customer_product_subtotal'],
                         'vendor_subtotal' => $calculated['vendor_subtotal'],
                     ],
                     'pricing' => $pricing,
                     'breakdown_explanation' => $this->getPricingExplanation($pricing),
                 ],
             ]);
-
         } catch (Exception $e) {
             return response()->json([
                 'success' => false,
@@ -73,47 +57,61 @@ class OrderPricingController extends Controller
         }
     }
 
-    /**
-     * Get a human-readable explanation of the pricing breakdown
-     */
     private function getPricingExplanation(array $pricing): array
     {
+        $productSubtotal = (float) ($pricing['customer_product_subtotal'] ?? $pricing['vendor_subtotal'] ?? 0);
+        $serviceFeePercent = (float) ($pricing['service_fee_percent'] ?? 0);
+        $serviceFeeTotal = (float) ($pricing['service_fee_total'] ?? $pricing['service_charge_total'] ?? 0);
+        $baseFee = (float) ($pricing['base_fee'] ?? $pricing['base_charge'] ?? 0);
+        $weightFee = (float) ($pricing['weight_fee'] ?? $pricing['weight_service_fee'] ?? 0);
+        $distanceFee = (float) ($pricing['distance_fee'] ?? $pricing['distance_charge_total'] ?? 0);
+        $deliveryFeeTotal = (float) ($pricing['delivery_fee_total'] ?? $pricing['total_charge'] ?? 0);
+        $vendorGrossPayout = (float) ($pricing['payout_breakdown']['vendor_gross_payout'] ?? $pricing['vendor_subtotal'] ?? 0);
+        $vendorTakePercent = (float) ($pricing['payout_breakdown']['vendor_take_percent'] ?? $pricing['vendor_take_percent'] ?? 0);
+        $vendorTakeTotal = (float) ($pricing['payout_breakdown']['vendor_take_total'] ?? 0);
+        $vendorNetPayout = (float) ($pricing['payout_breakdown']['vendor_payout'] ?? $vendorGrossPayout);
+
         return [
-            'delivery_charge_breakdown' => [
-                'base_charge' => [
-                    'amount' => $pricing['base_charge'],
-                    'description' => 'Fixed platform charge per order',
-                ],
-                'service_charge' => [
-                    'amount' => $pricing['service_charge_total'],
-                    'calculation' => "₦{$pricing['service_charge_per_item']} × {$pricing['item_count']} items",
-                    'description' => 'Charge per item in order',
-                ],
-                'distance_charge' => [
-                    'amount' => $pricing['distance_charge_total'],
-                    'calculation' => "₦{$pricing['charge_per_distance']} × {$pricing['distance_km']}km",
-                    'description' => 'Cost based on delivery distance',
-                ],
-                'weight_service_fee' => [
-                    'amount' => $pricing['weight_service_fee'],
-                    'calculation' => "Base fee × {$pricing['weight_tier_multiplier']} (for {$pricing['total_weight_kg']}kg)",
-                    'description' => 'Weight-based service fee',
+            'service_fee_breakdown' => [
+                'service_fee' => [
+                    'amount' => $serviceFeeTotal,
+                    'calculation' => "{$serviceFeePercent}% of product subtotal",
+                    'description' => 'Platform service fee charged on the selected products',
                 ],
             ],
-            'total_delivery_charge' => $pricing['total_charge'],
+            'delivery_fee_breakdown' => [
+                'base_fee' => [
+                    'amount' => $baseFee,
+                    'description' => 'Fixed base delivery fee per order',
+                ],
+                'weight_fee' => [
+                    'amount' => $weightFee,
+                    'calculation' => "{$pricing['total_weight_kg']}kg multiplied by the active per-kg rate",
+                    'description' => 'Delivery fee based on the combined order weight',
+                ],
+                'distance_fee' => [
+                    'amount' => $distanceFee,
+                    'calculation' => $pricing['distance_zone']
+                        ? "Zone fee for {$pricing['distance_zone']}"
+                        : 'Calculated from delivery distance',
+                    'description' => 'Zone-based delivery fee from vendor to customer',
+                ],
+            ],
+            'total_delivery_fee' => $deliveryFeeTotal,
             'payment_summary' => [
-                'vendor_items_cost' => $pricing['vendor_subtotal'],
-                'delivery_charge' => $pricing['total_charge'],
+                'product_cost' => $productSubtotal,
+                'vendor_items_cost' => (float) ($pricing['vendor_subtotal'] ?? $productSubtotal),
+                'vendor_gross_payout' => $vendorGrossPayout,
+                'vendor_take_percent' => $vendorTakePercent,
+                'vendor_take_total' => $vendorTakeTotal,
+                'vendor_net_payout' => $vendorNetPayout,
+                'service_fee' => $serviceFeeTotal,
+                'delivery_fee' => $deliveryFeeTotal,
                 'total_to_pay' => $pricing['payout_breakdown']['total_to_collect_from_customer'],
             ],
         ];
     }
 
-    /**
-     * Quick distance calculation
-     * 
-     * Calculates distance between two coordinates
-     */
     public function calculateDistance(): JsonResponse
     {
         request()->validate([
@@ -139,19 +137,14 @@ class OrderPricingController extends Controller
         ]);
     }
 
-    /**
-     * Get current active pricing configuration (public view)
-     * Shows rates without revealing margin calculations
-     */
     public function getPricingRates(): JsonResponse
     {
         try {
             $regionId = request('region_id', 'NG-DEFAULT');
             $pricingService = new PricingService($regionId);
-            
-            // Validate configuration
+
             $validation = $pricingService->validateConfiguration($regionId);
-            
+
             if (!$validation['is_valid']) {
                 return response()->json([
                     'success' => false,
@@ -170,19 +163,24 @@ class OrderPricingController extends Controller
                 'success' => true,
                 'data' => [
                     'base_charge' => $config->base_charge,
-                    'service_charge_per_item' => $config->service_charge,
                     'service_fee_percent' => $config->service_fee_percent,
-                    'charge_per_km' => $config->charge_per_distance,
+                    'product_markup_percent' => $config->product_markup_percent,
+                    'vendor_take_percent' => $config->vendor_take_percent,
+                    'delivery_pricing_model' => [
+                        'base_fee' => $config->base_charge,
+                        'distance_fee' => 'Zone-based',
+                        'weight_fee_per_kg' => $weightTiers->first()?->price_per_kg,
+                    ],
                     'weight_tiers' => $weightTiers->map(function ($tier) {
                         return [
                             'weight_range' => "{$tier->min_weight}kg - {$tier->max_weight}kg",
-                            'service_fee' => $tier->calculateServiceFee(),
+                            'price_per_kg' => $tier->price_per_kg,
+                            'calculated_weight_fee' => $tier->calculateWeightFee((float) $tier->max_weight),
                         ];
                     }),
                     'region_id' => $regionId,
                 ],
             ]);
-
         } catch (Exception $e) {
             return response()->json([
                 'success' => false,

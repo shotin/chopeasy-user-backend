@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\AgentEarning;
 use App\Models\AgentWithdrawal;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,7 +20,7 @@ class AdminAgentWithdrawalController extends Controller
         $status = $request->query('status');
         $search = $request->query('search');
 
-        $query = AgentWithdrawal::with('agent:id,fullname,email,main_wallet')
+        $query = AgentWithdrawal::with(['agent:id,fullname,email,main_wallet', 'lines'])
             ->when($status, fn($q) => $q->where('status', $status))
             ->when($search, function ($q) use ($search) {
                 $q->where(function ($q2) use ($search) {
@@ -57,7 +58,7 @@ class AdminAgentWithdrawalController extends Controller
         $perPage = $request->query('per_page', 20);
         $search = $request->query('search');
 
-        $query = AgentWithdrawal::with('agent:id,fullname,email,main_wallet')
+        $query = AgentWithdrawal::with(['agent:id,fullname,email,main_wallet', 'lines'])
             ->whereIn('status', ['approved', 'paid'])
             ->when($search, function ($q) use ($search) {
                 $q->where(function ($q2) use ($search) {
@@ -136,6 +137,9 @@ class AdminAgentWithdrawalController extends Controller
                 return response()->json(['error' => 'Agent not found for withdrawal'], 422);
             }
 
+            AgentEarning::where('withdrawal_id', $withdrawal->id)->update(['withdrawal_id' => null]);
+            $withdrawal->lines()->delete();
+
             $withdrawal->status = 'rejected';
             $withdrawal->save();
 
@@ -150,6 +154,7 @@ class AdminAgentWithdrawalController extends Controller
     private function formatWithdrawal(AgentWithdrawal $withdrawal): array
     {
         $agent = $withdrawal->agent;
+        $withdrawal->loadMissing('lines');
 
         return [
             'id' => (string) $withdrawal->id,
@@ -165,6 +170,11 @@ class AdminAgentWithdrawalController extends Controller
             'account_name' => $withdrawal->account_name,
             'created_at' => $withdrawal->created_at?->format('Y-m-d H:i') ?? '',
             'approved_at' => $withdrawal->updated_at?->format('Y-m-d H:i') ?? '',
+            'linked_commissions' => $withdrawal->lines->map(fn ($l) => [
+                'order_number' => $l->order_number,
+                'earning_type' => $l->earning_type,
+                'amount' => (float) $l->amount,
+            ])->values()->all(),
         ];
     }
 }

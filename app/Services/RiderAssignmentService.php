@@ -11,6 +11,10 @@ class RiderAssignmentService
 {
     public function assignNearestRider(Order $order): ?User
     {
+        if (!$order->isPaidForFulfillment()) {
+            return null;
+        }
+
         if ($order->accepted_by) {
             return User::find($order->accepted_by);
         }
@@ -171,10 +175,10 @@ class RiderAssignmentService
 
             return $best;
         } catch (\Throwable $e) {
-            Log::warning('Google Distance Matrix failed for rider assignment', [
-                'order_id' => $orderId,
-                'error' => $e->getMessage(),
-            ]);
+            // Log::warning('Google Distance Matrix failed for rider assignment', [
+            //     'order_id' => $orderId,
+            //     'error' => $e->getMessage(),
+            // ]);
 
             return null;
         }

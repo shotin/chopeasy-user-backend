@@ -13,12 +13,25 @@ class VendorProductItem extends Model
         'vendor_id',
         'category_id',
         'product_id',
+        'product_variant_id',
         'name',
+        'display_name',
+        'variant_label',
         'uom',
+        'weight',
         'quantity',
         'price',
+        'vendor_price',
         'category_name',
         'logo',
+    ];
+
+    protected $casts = [
+        'product_variant_id' => 'integer',
+        'weight' => 'decimal:2',
+        'quantity' => 'integer',
+        'price' => 'decimal:2',
+        'vendor_price' => 'decimal:2',
     ];
 
     /**

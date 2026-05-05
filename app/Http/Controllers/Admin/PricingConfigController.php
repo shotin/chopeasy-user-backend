@@ -54,6 +54,8 @@ class PricingConfigController extends Controller
             $data = array_merge($request->validated(), [
                 'service_charge' => $request->input('service_charge', 0),
                 'service_fee_percent' => $request->input('service_fee_percent', 0),
+                'product_markup_percent' => $request->input('product_markup_percent', 8),
+                'vendor_take_percent' => $request->input('vendor_take_percent', 0),
                 'charge_per_distance' => $request->input('charge_per_distance', 0),
                 'currency' => $request->input('currency', 'NGN'),
             ]);

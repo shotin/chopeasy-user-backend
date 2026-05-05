@@ -20,8 +20,14 @@ class AdminProductController extends Controller
         $category = $request->query('category');
 
         $query = VendorProductItem::with('vendor:id,fullname,store_name,email')
-            ->when($search, fn($q) => $q->where('name', 'like', "%{$search}%")
-                ->orWhere('category_name', 'like', "%{$search}%"))
+            ->when($search, function ($q) use ($search) {
+                $q->where(function ($innerQuery) use ($search) {
+                    $innerQuery->where('name', 'like', "%{$search}%")
+                        ->orWhere('display_name', 'like', "%{$search}%")
+                        ->orWhere('variant_label', 'like', "%{$search}%")
+                        ->orWhere('category_name', 'like', "%{$search}%");
+                });
+            })
             ->when($vendorId, fn($q) => $q->where('vendor_id', $vendorId))
             ->when($category, fn($q) => $q->where('category_name', $category))
             ->orderByDesc('created_at');
@@ -30,9 +36,10 @@ class AdminProductController extends Controller
 
         $formatted = $products->map(function ($item) {
             $vendor = $item->vendor;
+
             return [
                 'id' => (string) $item->id,
-                'name' => $item->name,
+                'name' => $item->display_name ?: $item->name,
                 'category' => $item->category_name ?? 'Uncategorized',
                 'price' => (float) $item->price,
                 'stock' => (int) ($item->quantity ?? 0),

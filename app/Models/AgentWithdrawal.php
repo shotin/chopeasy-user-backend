@@ -25,4 +25,14 @@ class AgentWithdrawal extends Model
     {
         return $this->belongsTo(User::class, 'agent_id');
     }
+
+    public function lines()
+    {
+        return $this->hasMany(AgentWithdrawalLine::class, 'agent_withdrawal_id');
+    }
+
+    public function earnings()
+    {
+        return $this->hasMany(AgentEarning::class, 'withdrawal_id');
+    }
 }

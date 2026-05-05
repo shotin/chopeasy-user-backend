@@ -45,6 +45,7 @@ class WeightTierController extends Controller
             $data['max_weight'] = $data['max_weight'] ?? 9999;
             $data['multiplier'] = $data['multiplier'] ?? 1;
             $data['base_service_fee'] = $data['base_service_fee'] ?? 0;
+            $data['platform_percentage'] = $data['platform_percentage'] ?? 0;
 
             $tier = WeightTier::create($data);
 
@@ -159,6 +160,7 @@ class WeightTierController extends Controller
             'tiers.*.max_weight' => 'required|numeric',
             'tiers.*.multiplier' => 'required|integer|min:1',
             'tiers.*.base_service_fee' => 'required|numeric|min:0',
+            'tiers.*.platform_percentage' => 'nullable|numeric|min:0|max:100',
             'region_id' => 'required|string',
         ]);
 
@@ -168,7 +170,8 @@ class WeightTierController extends Controller
             foreach ($request->tiers as $tierData) {
                 $tierData['region_id'] = $request->region_id;
                 $tierData['is_active'] = true;
-                
+                $tierData['platform_percentage'] = $tierData['platform_percentage'] ?? 0;
+
                 $created[] = WeightTier::create($tierData);
             }
 

@@ -13,10 +13,12 @@ use App\Http\Controllers\v1\Users\ProductReviewController;
 use App\Http\Controllers\v1\Users\RecentlyViewedController;
 use App\Http\Controllers\v1\Users\VendorOrderController;
 use App\Http\Controllers\v1\Users\VendorProductController;
+use App\Http\Controllers\v1\Users\PayoutHistoryController;
 use App\Http\Controllers\v1\Users\WishlistController;
 use App\Http\Controllers\v1\Users\PostalCodeController;
 use App\Http\Controllers\v1\Users\TopRatedController;
 use App\Http\Controllers\v1\Users\NotificationController;
+use App\Http\Controllers\v1\Users\BankAccountController;
 use App\Http\Controllers\v1\Orders\OrderPricingController;
 use App\Http\Controllers\v1\Agent\AgentController;
 use App\Http\Controllers\Admin\PricingConfigController;
@@ -27,7 +29,9 @@ use App\Http\Controllers\Admin\AdminVendorController;
 use App\Http\Controllers\Admin\AdminProductController;
 use App\Http\Controllers\Admin\AdminAgentController;
 use App\Http\Controllers\Admin\AdminAgentWithdrawalController;
+use App\Http\Controllers\Admin\AdminAgentCommissionController;
 use App\Http\Controllers\Admin\AdminNotificationController;
+use App\Http\Controllers\Admin\SlideController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
@@ -46,6 +50,11 @@ Route::prefix('v1')->group(function () {
     Route::group(["middleware" => ["auth:api"]], function () {
         Route::prefix('agent')->group(function () {
             Route::get('dashboard', [AgentController::class, 'dashboard']);
+            Route::get('withdrawal-prefix-sums', [AgentController::class, 'withdrawalPrefixSums']);
+            Route::get('transactions', [AgentController::class, 'transactions']);
+            Route::get('referred-customers', [AgentController::class, 'referredCustomers']);
+            Route::put('customer-notification-prefs', [AgentController::class, 'updateCustomerNotificationPrefs']);
+            Route::post('customer-reminders', [AgentController::class, 'sendCustomerReminder']);
             Route::put('bank-details', [AgentController::class, 'updateBankDetails']);
             Route::post('bank-details', [AgentController::class, 'updateBankDetails']);
             Route::get('banks', [AgentController::class, 'listBanks']);
@@ -68,18 +77,31 @@ Route::prefix('v1')->group(function () {
             Route::put('update', [AuthController::class, 'updateProfile']);
             Route::get('payment/verify/{reference}', [PaymentController::class, 'verify']);
         });
+
+        Route::get('/banks', [BankAccountController::class, 'listBanks']);
+        Route::get('/bank-account', [BankAccountController::class, 'show']);
+        Route::post('/bank-account', [BankAccountController::class, 'store']);
+        Route::put('/bank-account', [BankAccountController::class, 'update']);
+        Route::post('/bank-account/resolve', [BankAccountController::class, 'resolve']);
+        Route::post('/withdraw', [BankAccountController::class, 'withdraw']);
+
         Route::prefix('vendor')->middleware('auth:api')->group(function () {
             Route::get('subcategories', [VendorProductController::class, 'getSubcategories']);
             Route::post('products-by-category', [VendorProductController::class, 'getProductsByCategory']);
             Route::post('products', [VendorProductController::class, 'storeVendorProducts']);
+            Route::put('products/{id}', [VendorProductController::class, 'updateVendorProducts']);
+            Route::post('products/delete', [VendorProductController::class, 'deleteVendorProducts']);
             Route::post('profile', [VendorProductController::class, 'updateProfile']);
             Route::get('notifications', [NotificationController::class, 'vendorNotifications']);
+            Route::get('notifications/all', [NotificationController::class, 'allNotifications']);
             Route::post('notifications/read-all', [NotificationController::class, 'markAllAsRead']);
+            Route::get('payout-history', [PayoutHistoryController::class, 'vendorHistory']);
         });
         Route::post('/payment/initialize', [PaymentController::class, 'initialize']);
         Route::get('/payment/callback', [PaymentController::class, 'callback']);
         Route::get('/payment/failed', [PaymentController::class, 'failed']);
         Route::post('/verify-payment', [PaymentController::class, 'verify']);
+        Route::get('/transactions', [OrderController::class, 'userTransactions']);
 
         Route::prefix('orders')->group(function () {
             Route::post('estimate', [OrderPricingController::class, 'estimate']);
@@ -99,6 +121,7 @@ Route::prefix('v1')->group(function () {
             Route::get('available-pickups', [OrderController::class, 'availablePickups']);
             Route::post('accept-delivery/{orderId}', [OrderController::class, 'acceptDelivery']);
             Route::get('my-pickups', [OrderController::class, 'myPickups']);
+            Route::get('payout-history', [PayoutHistoryController::class, 'riderHistory']);
         });
     });
 
@@ -128,6 +151,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/admin/agent-withdrawals/history', [AdminAgentWithdrawalController::class, 'history']);
         Route::post('/admin/agent-withdrawals/{id}/approve', [AdminAgentWithdrawalController::class, 'approve']);
         Route::post('/admin/agent-withdrawals/{id}/reject', [AdminAgentWithdrawalController::class, 'reject']);
+        Route::get('/admin/agent-commission-settings', [AdminAgentCommissionController::class, 'show']);
+        Route::put('/admin/agent-commission-settings', [AdminAgentCommissionController::class, 'update']);
         Route::get('/admin/notifications', [AdminNotificationController::class, 'index']);
 
         // Admin Pricing Management
@@ -158,6 +183,13 @@ Route::prefix('v1')->group(function () {
             Route::patch('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'update']);
             Route::post('rider-payout-rules/{riderPayoutRule}/toggle-active', [RiderPayoutRuleController::class, 'toggleActive']);
             Route::delete('rider-payout-rules/{riderPayoutRule}', [RiderPayoutRuleController::class, 'destroy']);
+
+            // Slides Management
+            Route::get('slides', [SlideController::class, 'index']);
+            Route::post('slides', [SlideController::class, 'store']);
+            Route::get('slides/{id}', [SlideController::class, 'show']);
+            Route::put('slides/{id}', [SlideController::class, 'update']);
+            Route::delete('slides/{id}', [SlideController::class, 'destroy']);
         });
     });
 
@@ -181,17 +213,8 @@ Route::prefix('v1')->group(function () {
     // Public Pricing Information
     Route::get('/pricing-rates', [OrderPricingController::class, 'getPricingRates']);
     Route::post('/calculate-distance', [OrderPricingController::class, 'calculateDistance']);
-    // Store vendor products (bulk add)
-    Route::post('/vendor/products', [VendorProductController::class, 'storeVendorProducts']);
-
-    // Show a vendor's product set
+    // Show a vendor's product set (public catalog / dashboard listing)
     Route::get('/vendor/products/{id}', [VendorProductController::class, 'showVendorProducts']);
-
-    // Update vendor products (replace JSON)
-    Route::put('/vendor/products/{id}', [VendorProductController::class, 'updateVendorProducts']);
-
-    // Delete vendor products
-    Route::post('/vendor/products/delete', [VendorProductController::class, 'deleteVendorProducts']);
 
     Route::get('/categories', [ProductCategoryController::class, 'index']);
     Route::post('/products', [ProductCategoryController::class, 'products']);
@@ -218,4 +241,7 @@ Route::prefix('v1')->group(function () {
     // Top Rated endpoints (public)
     Route::get('/top-rated/stores', [TopRatedController::class, 'topRatedStores']);
     Route::get('/top-rated/products', [TopRatedController::class, 'topRatedProducts']);
+
+    // Public slides for carousel
+    Route::get('/slides/active', [SlideController::class, 'active']);
 });

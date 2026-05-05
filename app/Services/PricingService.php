@@ -10,9 +10,13 @@ use Exception;
 
 /**
  * PricingService - Core pricing calculation engine
- * 
- * Implements the formula:
- * TotalCharge = baseCharge + (serviceCharge × itemCount) + (chargePerDistance × distanceInKm) + baseServiceFee(weightRange)
+ *
+ * New model:
+ * - Delivery fee = Base Fee + Weight Fee + Distance Fee (customer total unchanged)
+ * - Platform takes platform_percentage of the weight fee; rider gets the rest of the weight fee + distance zone payout (not the order base fee)
+ * - Service fee = percentage of customer-visible product subtotal
+ * - Vendor payout = vendor base subtotal minus configured vendor take
+ * - Product markup stays with the platform
  */
 class PricingService
 {
@@ -21,126 +25,145 @@ class PricingService
     private ?RiderPayoutRule $riderPayoutRule = null;
     private string $regionId;
 
-    /**
-     * Initialize the pricing service
-     */
     public function __construct(?string $regionId = 'NG-DEFAULT')
     {
         $this->regionId = $regionId;
     }
 
-    /**
-     * Calculate the total charge for an order
-     * 
-     * @param int $itemCount Total quantity of items
-     * @param float $totalWeight Total weight in kg
-     * @param float $distanceInKm Distance in kilometers
-     * @param float|null $vendorSubtotal Vendor's subtotal (items cost)
-     * @return array Complete pricing breakdown
-     * @throws Exception if configuration is missing
-     */
     public function calculateOrderPricing(
         int $itemCount,
         float $totalWeight,
         float $distanceInKm,
-        ?float $vendorSubtotal = 0
+        ?float $customerProductSubtotal = 0,
+        ?float $vendorSubtotal = null
     ): array {
-        // Load active pricing configuration
         $this->loadPricingConfig();
-        
-        // Find appropriate weight tier
         $this->loadWeightTier($totalWeight);
-        
-        // Find rider payout rule
         $this->loadRiderPayoutRule($distanceInKm, $totalWeight);
 
-        // Execute the pricing formula
-        $breakdown = $this->executeFormula($itemCount, $totalWeight, $distanceInKm, $vendorSubtotal);
+        $breakdown = $this->executeFormula(
+            $itemCount,
+            $totalWeight,
+            $distanceInKm,
+            (float) ($customerProductSubtotal ?? 0),
+            $vendorSubtotal !== null ? (float) $vendorSubtotal : null
+        );
 
-        // Calculate payouts
-        $breakdown['payout_breakdown'] = $this->calculatePayouts($breakdown, $vendorSubtotal);
-
-        // Add metadata
+        $breakdown['payout_breakdown'] = $this->calculatePayouts($breakdown);
         $breakdown['metadata'] = $this->getMetadata();
 
         return $breakdown;
     }
 
-    /**
-     * Execute the core pricing formula
-     * New model: Delivery Fee = Base Fee + (Weight × price_per_kg) + Distance Zone Fee
-     */
     private function executeFormula(
         int $itemCount,
         float $totalWeight,
         float $distanceInKm,
-        float $vendorSubtotal
+        float $customerProductSubtotal,
+        ?float $vendorSubtotal
     ): array {
+        $resolvedVendorSubtotal = $vendorSubtotal !== null
+            ? max((float) $vendorSubtotal, 0)
+            : max($customerProductSubtotal, 0);
+
+        $resolvedCustomerSubtotal = max($customerProductSubtotal, 0);
+        if ($resolvedCustomerSubtotal < $resolvedVendorSubtotal) {
+            $resolvedCustomerSubtotal = $resolvedVendorSubtotal;
+        }
+
+        $productMarkupTotal = max($resolvedCustomerSubtotal - $resolvedVendorSubtotal, 0);
+
         $baseFee = (float) $this->pricingConfig->base_charge;
         $weightFee = $this->weightTier->calculateWeightFee($totalWeight);
+        $platformPct = max(0, min(100, (float) ($this->weightTier->platform_percentage ?? 0)));
+        $weightFeePlatformTake = round($weightFee * ($platformPct / 100), 2);
+        $weightFeeRiderShare = round(max($weightFee - $weightFeePlatformTake, 0), 2);
         $serviceFeePercent = (float) ($this->pricingConfig->service_fee_percent ?? 0);
-        $serviceFeeTotal = $vendorSubtotal > 0 ? ($vendorSubtotal * $serviceFeePercent / 100) : 0;
+        $vendorTakePercent = (float) ($this->pricingConfig->vendor_take_percent ?? 0);
+        $serviceFeeTotal = $resolvedCustomerSubtotal > 0
+            ? ($resolvedCustomerSubtotal * $serviceFeePercent / 100)
+            : 0;
 
         $zone = RiderPayoutRule::findZoneForDistance($distanceInKm, $this->regionId);
         $distanceFee = $zone ? $zone->getZoneFee() : 0;
-
-        $totalCharge = $baseFee + $weightFee + $distanceFee;
+        $deliveryFeeTotal = $baseFee + $weightFee + $distanceFee;
 
         return [
             'base_charge' => round($baseFee, 2),
             'base_fee' => round($baseFee, 2),
             'weight_fee' => round($weightFee, 2),
+            'weight_service_fee' => round($weightFee, 2),
+            'weight_platform_percentage' => round($platformPct, 2),
+            'weight_fee_platform_take' => $weightFeePlatformTake,
+            'weight_fee_rider_share' => $weightFeeRiderShare,
             'weight_price_per_kg' => $this->weightTier->price_per_kg ?? null,
             'distance_fee' => round($distanceFee, 2),
+            'distance_charge_total' => round($distanceFee, 2),
             'distance_zone' => $zone?->zone_name,
             'service_fee_percent' => round($serviceFeePercent, 2),
             'service_fee_total' => round($serviceFeeTotal, 2),
-            'total_charge' => round($totalCharge, 2),
+            'service_charge_total' => round($serviceFeeTotal, 2),
+            'vendor_take_percent' => round($vendorTakePercent, 2),
+            'total_charge' => round($deliveryFeeTotal, 2),
+            'delivery_fee_total' => round($deliveryFeeTotal, 2),
             'item_count' => $itemCount,
-            'total_weight_kg' => $totalWeight,
-            'distance_km' => $distanceInKm,
-            'vendor_subtotal' => round($vendorSubtotal, 2),
+            'total_weight_kg' => round($totalWeight, 2),
+            'distance_km' => round($distanceInKm, 2),
+            'customer_product_subtotal' => round($resolvedCustomerSubtotal, 2),
+            'vendor_subtotal' => round($resolvedVendorSubtotal, 2),
+            'product_markup_total' => round($productMarkupTotal, 2),
         ];
     }
 
-    /**
-     * Calculate payout distribution
-     */
-    private function calculatePayouts(array $breakdown, float $vendorSubtotal): array
+    private function calculatePayouts(array $breakdown): array
     {
-        $totalCharge = $breakdown['total_charge'];
-        $serviceFeeTotal = $breakdown['service_fee_total'] ?? 0;
+        $deliveryFeeTotal = (float) ($breakdown['delivery_fee_total'] ?? $breakdown['total_charge'] ?? 0);
+        $serviceFeeTotal = (float) ($breakdown['service_fee_total'] ?? 0);
+        $vendorSubtotal = (float) ($breakdown['vendor_subtotal'] ?? 0);
+        $customerSubtotal = (float) ($breakdown['customer_product_subtotal'] ?? $vendorSubtotal);
+        $productMarkupTotal = (float) ($breakdown['product_markup_total'] ?? max($customerSubtotal - $vendorSubtotal, 0));
+        $vendorTakePercent = (float) ($breakdown['vendor_take_percent'] ?? $this->pricingConfig?->vendor_take_percent ?? 0);
+        $vendorTakeTotal = $vendorSubtotal > 0
+            ? ($vendorSubtotal * $vendorTakePercent / 100)
+            : 0;
+        $vendorPayout = max($vendorSubtotal - $vendorTakeTotal, 0);
 
         $zone = RiderPayoutRule::findZoneForDistance($breakdown['distance_km'], $this->regionId);
-        $riderPayout = $zone ? $zone->getZoneFee() : ($this->riderPayoutRule
-            ? $this->riderPayoutRule->calculatePayout($breakdown['distance_km'], $breakdown['total_weight_kg'])
-            : 0);
+        $distanceFee = (float) ($breakdown['distance_fee'] ?? $breakdown['distance_charge_total'] ?? 0);
+        $distancePayout = $zone ? (float) $zone->getZoneFee() : ($this->riderPayoutRule
+            ? (float) $this->riderPayoutRule->calculatePayout($breakdown['distance_km'], $breakdown['total_weight_kg'])
+            : $distanceFee);
 
-        // Vendor gets their items cost
-        $vendorPayout = $vendorSubtotal;
+        $weightFeeRiderShare = (float) ($breakdown['weight_fee_rider_share'] ?? $breakdown['weight_fee'] ?? 0);
+        // Rider receives their share of the weight fee plus the distance payout (not the order base fee).
+        $riderPayout = round($weightFeeRiderShare + $distancePayout, 2);
 
-        // Platform revenue = Total charge - Rider payout
-        // (Vendor is paid separately from vendor's subtotal, not from delivery charge)
-        $platformRevenue = $totalCharge - $riderPayout + $serviceFeeTotal;
-
-        // Calculate margin percentage
-        $marginBase = $totalCharge + $serviceFeeTotal;
+        $platformRevenue = $productMarkupTotal + ($deliveryFeeTotal - $riderPayout) + $serviceFeeTotal + $vendorTakeTotal;
+        $marginBase = $customerSubtotal + $deliveryFeeTotal + $serviceFeeTotal;
         $marginPercentage = $marginBase > 0
             ? round(($platformRevenue / $marginBase) * 100, 2)
             : 0;
 
         return [
             'rider_payout' => round($riderPayout, 2),
+            'rider_distance_payout' => round($distancePayout, 2),
+            'weight_fee_platform_take' => round((float) ($breakdown['weight_fee_platform_take'] ?? 0), 2),
+            'weight_fee_rider_share' => round($weightFeeRiderShare, 2),
+            'weight_platform_percentage' => round((float) ($breakdown['weight_platform_percentage'] ?? 0), 2),
+            'vendor_gross_payout' => round($vendorSubtotal, 2),
+            'vendor_take_percent' => round($vendorTakePercent, 2),
+            'vendor_take_total' => round($vendorTakeTotal, 2),
             'vendor_payout' => round($vendorPayout, 2),
             'platform_revenue' => round($platformRevenue, 2),
+            'product_markup_total' => round($productMarkupTotal, 2),
             'platform_margin_percentage' => $marginPercentage,
-            'total_to_collect_from_customer' => round($totalCharge + $vendorSubtotal + $serviceFeeTotal, 2),
+            'total_to_collect_from_customer' => round(
+                $customerSubtotal + $deliveryFeeTotal + $serviceFeeTotal,
+                2
+            ),
         ];
     }
 
-    /**
-     * Load active pricing configuration
-     */
     private function loadPricingConfig(): void
     {
         $this->pricingConfig = PricingConfig::getActiveConfig($this->regionId);
@@ -151,9 +174,6 @@ class PricingService
         }
     }
 
-    /**
-     * Load weight tier - uses getActiveRate for new model (price_per_kg)
-     */
     private function loadWeightTier(float $weight): void
     {
         $this->weightTier = WeightTier::findTierForWeight($weight, $this->regionId)
@@ -165,27 +185,21 @@ class PricingService
         }
     }
 
-    /**
-     * Load rider payout rule
-     */
     private function loadRiderPayoutRule(float $distance, float $weight): void
     {
         $this->riderPayoutRule = RiderPayoutRule::findRuleForDelivery($distance, $weight, $this->regionId);
 
         if (!$this->riderPayoutRule) {
             Log::warning("No rider payout rule found for distance: {$distance}km, weight: {$weight}kg");
-            // Don't throw exception - we can still calculate order total
         }
     }
 
-    /**
-     * Get metadata about the pricing calculation
-     */
     private function getMetadata(): array
     {
         $weightRange = isset($this->weightTier->price_per_kg)
-            ? "₦{$this->weightTier->price_per_kg}/kg"
+            ? "NGN {$this->weightTier->price_per_kg}/kg"
             : "{$this->weightTier->min_weight}kg - {$this->weightTier->max_weight}kg";
+
         return [
             'pricing_config_id' => $this->pricingConfig->id,
             'pricing_config_name' => $this->pricingConfig->name,
@@ -197,9 +211,6 @@ class PricingService
         ];
     }
 
-    /**
-     * Preview pricing for admin dashboard
-     */
     public function previewPricing(array $scenarios): array
     {
         $results = [];
@@ -212,7 +223,10 @@ class PricingService
                         $scenario['item_count'],
                         $scenario['total_weight'],
                         $scenario['distance_km'],
-                        $scenario['vendor_subtotal'] ?? 0
+                        $scenario['customer_product_subtotal']
+                            ?? $scenario['vendor_subtotal']
+                            ?? 0,
+                        $scenario['vendor_subtotal'] ?? null
                     ),
                 ];
             } catch (Exception $e) {
@@ -226,33 +240,26 @@ class PricingService
         return $results;
     }
 
-    /**
-     * Validate pricing configuration completeness
-     */
     public function validateConfiguration(?string $regionId = null): array
     {
         $regionId = $regionId ?? $this->regionId;
         $issues = [];
 
-        // Check pricing config
         $config = PricingConfig::getActiveConfig($regionId);
         if (!$config) {
             $issues[] = "No active pricing configuration found for region: {$regionId}";
         }
 
-        // Check weight tiers
         $tiers = WeightTier::forRegion($regionId)->active()->orderedByWeight()->get();
         if ($tiers->isEmpty()) {
             $issues[] = "No weight tiers configured for region: {$regionId}";
         } else {
-            // Check for gaps in weight coverage
             $maxWeight = $tiers->max('max_weight');
             if ($maxWeight < 50) {
                 $issues[] = "Weight tiers only cover up to {$maxWeight}kg. Consider extending to 50kg.";
             }
         }
 
-        // Check rider payout rules
         $rules = RiderPayoutRule::forRegion($regionId)->active()->get();
         if ($rules->isEmpty()) {
             $issues[] = "No rider payout rules configured for region: {$regionId}";
@@ -265,16 +272,13 @@ class PricingService
         ];
     }
 
-    /**
-     * Calculate distance between two coordinates (Haversine formula)
-     */
     public static function calculateDistance(
         float $lat1,
         float $lon1,
         float $lat2,
         float $lon2
     ): float {
-        $earthRadius = 6371; // km
+        $earthRadius = 6371;
 
         $dLat = deg2rad($lat2 - $lat1);
         $dLon = deg2rad($lon2 - $lon1);

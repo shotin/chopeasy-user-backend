@@ -52,6 +52,7 @@ class User extends Authenticatable implements JWTSubject
         'latitude',
         'vehicle',
         'referred_by_agent_id',
+        'onboarding_completed',
     ];
 
     protected $hidden = ['password', 'remember_token', 'email_otp'];
@@ -63,6 +64,7 @@ class User extends Authenticatable implements JWTSubject
         'is_active' => 'boolean',
         'is_default' => 'boolean',
         'can_login' => 'boolean',
+        'onboarding_completed' => 'boolean',
         'two_fa' => 'boolean',
     ];
 
@@ -106,6 +108,16 @@ public function agentBankDetails()
     return $this->hasOne(AgentBankDetail::class);
 }
 
+public function vendorBankDetails()
+{
+    return $this->hasOne(VendorBankDetail::class);
+}
+
+public function riderBankDetails()
+{
+    return $this->hasOne(RiderBankDetail::class);
+}
+
 public function referredByAgent()
 {
     return $this->belongsTo(User::class, 'referred_by_agent_id');
@@ -129,6 +141,16 @@ public function agentWithdrawals()
 public function agentOrders()
 {
     return $this->hasMany(Order::class, 'agent_id');
+}
+
+public function vendorPayouts()
+{
+    return $this->hasMany(VendorPayout::class, 'vendor_id');
+}
+
+public function riderPayouts()
+{
+    return $this->hasMany(RiderPayout::class, 'rider_id');
 }
 
 

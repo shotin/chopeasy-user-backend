@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use App\Models\User;
+use App\Models\Transaction;
 
 class PaymentController extends Controller
 {
@@ -77,7 +78,28 @@ class PaymentController extends Controller
             $user = User::where('email', $email)->first();
 
             if ($user) {
-                $user->increment('main_wallet', $amount);
+                $existing = Transaction::where('reference', $reference)
+                    ->where('user_id', $user->id)
+                    ->where('type', 'deposit')
+                    ->first();
+
+                if (!$existing) {
+                    $user->increment('main_wallet', $amount);
+
+                    Transaction::create([
+                        'user_id' => $user->id,
+                        'order_id' => null,
+                        'type' => 'deposit',
+                        'source_wallet' => 'main_wallet',
+                        'destination_wallet' => 'main_wallet',
+                        'amount' => $amount,
+                        'reference' => $reference,
+                        'status' => 'successful',
+                        'description' => 'Wallet top up via Paystack',
+                    ]);
+                } else {
+                    $user->refresh();
+                }
             }
 
             return response()->json([

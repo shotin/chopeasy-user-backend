@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\v1\Users;
 
 use App\Http\Controllers\Controller;
+use App\Models\PricingConfig;
 use App\Models\User;
 use App\Models\VendorProduct;
 use App\Models\VendorProductItem;
@@ -12,9 +13,45 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
+use App\Services\VendorStockNotifier;
 
 class VendorProductController extends Controller
 {
+    private const DEFAULT_VENDOR_PRODUCT_MARKUP_PERCENT = 8.0;
+
+    protected $inventoryProductCache = [];
+
+    protected $inventoryVariantCache = [];
+
+    protected function authorizeVendorInventoryRequest(Request $request, int $vendorId, bool $requireBankDetails = false)
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'error' => 'Please log in to manage vendor inventory.',
+            ], 401);
+        }
+
+        if ($user->user_type !== 'vendor' || (int) $user->id !== $vendorId) {
+            return response()->json([
+                'error' => 'You are not allowed to manage this vendor inventory.',
+            ], 403);
+        }
+
+        if ($requireBankDetails) {
+            $user->loadMissing('vendorBankDetails');
+
+            if (!$user->vendorBankDetails) {
+                return response()->json([
+                    'error' => 'Please add your bank account details before adding products.',
+                ], 422);
+            }
+        }
+
+        return null;
+    }
+
     /**
      * List all categories added by vendors in the B2C system
      */
@@ -423,6 +460,427 @@ case 'price-low':
     /**
      * Create vendor products (save as JSON)
      */
+    protected function formatVariantLabel(array $product): ?string
+    {
+        $variantLabel = trim((string) ($product['variant_label'] ?? ''));
+
+        if ($variantLabel !== '') {
+            return $variantLabel;
+        }
+
+        return $this->formatCompactWeightLabel(
+            $product['weight'] ?? null,
+            $product['uom'] ?? null
+        );
+    }
+
+    protected function formatDisplayName(array $product): string
+    {
+        $variantLabel = trim((string) ($product['variant_label'] ?? ''));
+
+        if ($variantLabel !== '') {
+            return $variantLabel;
+        }
+
+        return trim((string) ($product['name'] ?? ''));
+    }
+
+    protected function resolveVendorMarkupPercent(?string $regionId = 'NG-DEFAULT'): float
+    {
+        try {
+            $config = PricingConfig::getActiveConfig($regionId);
+            $percent = $config ? (float) ($config->product_markup_percent ?? 0) : 0.0;
+
+            if ($percent >= 0) {
+                return $percent;
+            }
+        } catch (\Throwable $e) {
+            // Fall back to the fixed platform markup below.
+        }
+
+        return self::DEFAULT_VENDOR_PRODUCT_MARKUP_PERCENT;
+    }
+
+    protected function applyVendorMarkup($price, ?string $regionId = 'NG-DEFAULT'): float
+    {
+        $basePrice = is_numeric($price) ? (float) $price : 0.0;
+        $markupPercent = $this->resolveVendorMarkupPercent($regionId);
+
+        return round($basePrice + (($markupPercent / 100) * $basePrice), 2);
+    }
+
+    protected function duplicateVendorProductItemExists(
+        int $vendorId,
+        int $productId,
+        ?int $productVariantId,
+        ?int $ignoreId = null
+    ): bool {
+        $query = VendorProductItem::where('vendor_id', $vendorId)
+            ->where('product_id', $productId);
+
+        if (!is_null($ignoreId)) {
+            $query->where('id', '!=', $ignoreId);
+        }
+
+        if ($productVariantId) {
+            $query->where('product_variant_id', $productVariantId);
+        } else {
+            $query->whereNull('product_variant_id');
+        }
+
+        return $query->exists();
+    }
+
+    protected function mapVendorProductItem(VendorProductItem $item): array
+    {
+        $weight = isset($item->weight) ? (float) $item->weight : null;
+        $uomDisplay = $this->formatWeightUomLabel($weight, $item->uom);
+        $vendorPrice = isset($item->vendor_price) && $item->vendor_price !== null
+            ? (float) $item->vendor_price
+            : (float) ($item->price ?? 0);
+        $quantity = max((int) ($item->quantity ?? 0), 0);
+        $isOutOfStock = $quantity <= 0;
+        $isLowStock = !$isOutOfStock && $quantity < 5;
+        $stockStatus = $isOutOfStock ? 'out_of_stock' : ($isLowStock ? 'low_stock' : 'in_stock');
+
+        return [
+            'id' => $item->id,
+            'vendor_product_item_id' => $item->id,
+            'product_id' => $item->product_id,
+            'product_variant_id' => $item->product_variant_id,
+            'vendor_id' => $item->vendor_id,
+            'vendor_name' => $item->vendor->fullname ?? 'Unknown Vendor',
+            'category_id' => $item->category_id,
+            'category_name' => $item->category_name,
+            'base_name' => $item->name,
+            'name' => $item->display_name ?: $item->name,
+            'display_name' => $item->display_name ?: $item->name,
+            'variant_label' => $item->variant_label,
+            'logo' => $item->logo,
+            'image' => $item->logo,
+            'uom' => $item->uom,
+            'unit_name' => $item->uom,
+            'uom_display' => $uomDisplay,
+            'weight' => $weight,
+            'weight_label' => $uomDisplay,
+            'quantity' => $quantity,
+            'stock_status' => $stockStatus,
+            'stock_label' => $isOutOfStock ? 'Out of stock' : ($isLowStock ? 'Low stock' : 'In stock'),
+            'is_low_stock' => $isLowStock,
+            'is_out_of_stock' => $isOutOfStock,
+            'vendor_price' => $vendorPrice,
+            'price' => $item->price,
+            'created_at' => $item->created_at,
+            'updated_at' => $item->updated_at,
+        ];
+    }
+
+    protected function fetchInventoryProduct(int $productId): ?array
+    {
+        if (array_key_exists($productId, $this->inventoryProductCache)) {
+            return $this->inventoryProductCache[$productId];
+        }
+
+        try {
+            $response = Http::withToken(config('services.inventory.api_token'))
+                ->get(config('services.inventory.url') . "/product/retail/{$productId}");
+
+            if (!$response->successful()) {
+                $this->inventoryProductCache[$productId] = null;
+                return null;
+            }
+
+            $product = $response->json();
+
+            $this->inventoryProductCache[$productId] = isset($product['id']) ? $product : null;
+
+            return $this->inventoryProductCache[$productId];
+        } catch (\Throwable $e) {
+            $this->inventoryProductCache[$productId] = null;
+            return null;
+        }
+    }
+
+    protected function fetchInventoryVariant(int $variantId): ?array
+    {
+        if (array_key_exists($variantId, $this->inventoryVariantCache)) {
+            return $this->inventoryVariantCache[$variantId];
+        }
+
+        try {
+            $response = Http::withToken(config('services.inventory.api_token'))
+                ->get(config('services.inventory.url') . "/product/variant/{$variantId}");
+
+            if (!$response->successful()) {
+                $this->inventoryVariantCache[$variantId] = null;
+                return null;
+            }
+
+            $variant = $response->json('variant');
+
+            $this->inventoryVariantCache[$variantId] = isset($variant['id']) ? $variant : null;
+
+            return $this->inventoryVariantCache[$variantId];
+        } catch (\Throwable $e) {
+            $this->inventoryVariantCache[$variantId] = null;
+            return null;
+        }
+    }
+
+    protected function extractUnitLabel($unit): ?string
+    {
+        if (is_string($unit)) {
+            return $this->normalizeUnitLabel($unit);
+        }
+
+        if (!is_array($unit)) {
+            return null;
+        }
+
+        foreach (['name', 'short_name', 'quantity_label', 'label'] as $key) {
+            $value = $this->normalizeUnitLabel((string) ($unit[$key] ?? ''));
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    protected function extractVariantName($value): ?string
+    {
+        if (is_string($value)) {
+            $variantName = trim($value);
+
+            return $variantName !== '' ? $variantName : null;
+        }
+
+        if (!is_array($value)) {
+            return null;
+        }
+
+        foreach (['variant_name', 'product_variant_name', 'display_name', 'name', 'title', 'label'] as $key) {
+            $variantName = trim((string) ($value[$key] ?? ''));
+
+            if ($variantName !== '') {
+                return $variantName;
+            }
+        }
+
+        return null;
+    }
+
+    protected function normalizeUnitLabel(?string $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $label = trim($value);
+
+        if ($label === '') {
+            return null;
+        }
+
+        $label = preg_replace('/^\s*\d+(?:\.\d+)?\s*/', '', $label) ?? $label;
+        $label = trim($label);
+
+        return $label !== '' ? $label : null;
+    }
+
+    protected function extractWeightValue($value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            return (float) $value;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        if (preg_match('/-?\d+(?:\.\d+)?/', $value, $matches) !== 1) {
+            return null;
+        }
+
+        return (float) $matches[0];
+    }
+
+    protected function formatWeightValue(?float $weight): ?string
+    {
+        if ($weight === null) {
+            return null;
+        }
+
+        $formatted = number_format($weight, 2, '.', '');
+        $formatted = rtrim(rtrim($formatted, '0'), '.');
+
+        return $formatted !== '' ? $formatted : null;
+    }
+
+    protected function formatWeightUomLabel(?float $weight, ?string $uom): ?string
+    {
+        $unitLabel = $this->normalizeUnitLabel($uom);
+        $weightLabel = $this->formatWeightValue($weight);
+
+        if ($weightLabel !== null && $unitLabel !== null) {
+            return trim($weightLabel . ' ' . $unitLabel);
+        }
+
+        return $unitLabel;
+    }
+
+    protected function formatCompactWeightLabel($weight, ?string $uom): ?string
+    {
+        $weightValue = $this->extractWeightValue($weight);
+        $weightLabel = $this->formatWeightValue($weightValue);
+        $unitLabel = $this->normalizeUnitLabel($uom);
+
+        if ($weightLabel !== null && $unitLabel !== null) {
+            return trim($weightLabel . $unitLabel);
+        }
+
+        return $weightLabel ?? $unitLabel;
+    }
+
+    protected function findInventoryProductVariant(?array $product, ?int $productVariantId): ?array
+    {
+        if (!$productVariantId) {
+            return null;
+        }
+
+        $productVariants = $product['product_variants'] ?? null;
+
+        if (!is_array($productVariants)) {
+            return null;
+        }
+
+        foreach ($productVariants as $productVariant) {
+            if (
+                is_array($productVariant) &&
+                (int) ($productVariant['id'] ?? 0) === (int) $productVariantId
+            ) {
+                return $productVariant;
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveVendorProductUom(
+        int $productId,
+        ?int $productVariantId,
+        ?string $fallback = null
+    ): ?string {
+        $variant = $productVariantId ? $this->fetchInventoryVariant($productVariantId) : null;
+        $product = $this->fetchInventoryProduct($productId);
+        $productVariant = $this->findInventoryProductVariant($product, $productVariantId);
+
+        return $this->extractUnitLabel($productVariant['unit'] ?? null)
+            ?? $this->extractUnitLabel($variant['unit_data'] ?? null)
+            ?? $this->extractUnitLabel($variant['unit_details'] ?? null)
+            ?? $this->extractUnitLabel($variant['unit_name'] ?? null)
+            ?? $this->extractUnitLabel($variant['uom'] ?? null)
+            ?? $this->extractUnitLabel($variant['unit'] ?? null)
+            ?? $this->extractUnitLabel($product['unit'] ?? null)
+            ?? $this->normalizeUnitLabel($fallback);
+    }
+
+    protected function resolveVendorProductWeight(
+        int $productId,
+        ?int $productVariantId,
+        $fallback = null
+    ): ?float {
+        $variant = $productVariantId ? $this->fetchInventoryVariant($productVariantId) : null;
+        $product = $this->fetchInventoryProduct($productId);
+        $productVariant = $this->findInventoryProductVariant($product, $productVariantId);
+
+        return $this->extractWeightValue($productVariant['weight'] ?? null)
+            ?? $this->extractWeightValue($variant['weight'] ?? null)
+            ?? $this->extractWeightValue($product['weight'] ?? null)
+            ?? $this->extractWeightValue($fallback);
+    }
+
+    protected function extractImagePath($value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $path = trim($value);
+
+        return $path !== '' ? $path : null;
+    }
+
+    protected function resolveVendorProductLogo(
+        int $productId,
+        ?int $productVariantId,
+        ?string $fallback = null
+    ): ?string {
+        $variant = $productVariantId ? $this->fetchInventoryVariant($productVariantId) : null;
+        $product = $this->fetchInventoryProduct($productId);
+
+        return $this->extractImagePath($variant['image'] ?? null)
+            ?? $this->extractImagePath($product['image'] ?? null)
+            ?? $this->extractImagePath($product['logo'] ?? null)
+            ?? (filled($fallback) ? trim((string) $fallback) : null);
+    }
+
+    protected function resolveVendorProductBrandName(
+        int $productId,
+        ?int $productVariantId,
+        ?string $fallback = null
+    ): ?string {
+        $variant = $productVariantId ? $this->fetchInventoryVariant($productVariantId) : null;
+        $product = $this->fetchInventoryProduct($productId);
+        $productVariant = $this->findInventoryProductVariant($product, $productVariantId);
+
+        foreach ([
+            $productVariant['brand'] ?? null,
+            $variant['brand'] ?? null,
+            $product['brand'] ?? null,
+            $fallback,
+        ] as $brand) {
+            if (is_array($brand)) {
+                $brand = $brand['name'] ?? null;
+            }
+
+            if (!is_string($brand)) {
+                continue;
+            }
+
+            $brandName = trim($brand);
+
+            if ($brandName !== '') {
+                return $brandName;
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveVendorProductVariantName(
+        int $productId,
+        ?int $productVariantId,
+        ?string $fallback = null
+    ): ?string {
+        $variant = $productVariantId ? $this->fetchInventoryVariant($productVariantId) : null;
+        $product = $this->fetchInventoryProduct($productId);
+        $productVariant = $this->findInventoryProductVariant($product, $productVariantId);
+
+        foreach ([$fallback, $productVariant, $variant] as $candidate) {
+            $variantName = $this->extractVariantName($candidate);
+
+            if ($variantName !== null) {
+                return $variantName;
+            }
+        }
+
+        return null;
+    }
 
     /**
      * Store vendor products (create multiple rows).
@@ -432,48 +890,126 @@ case 'price-low':
         $validator = Validator::make($request->all(), [
             'vendor_id' => 'required|exists:users,id',
             'category_id' => 'required|string',
-            'category_name' => 'required|string', // new
-            'products' => 'required|array',
+            'category_name' => 'required|string',
+            'products' => 'required|array|min:1',
             'products.*.product_id' => 'required|integer',
+            'products.*.product_variant_id' => 'nullable|integer',
             'products.*.name' => 'required|string',
+            'products.*.brand_name' => 'nullable|string',
+            'products.*.display_name' => 'nullable|string',
+            'products.*.variant_label' => 'nullable|string',
+            'products.*.uom' => 'nullable|string',
+            'products.*.weight' => 'nullable|numeric|min:0',
             'products.*.quantity' => 'required|integer|min:1',
             'products.*.price' => 'required|numeric|min:0',
-            'products.*.uom' => 'required|string',
-            'products.*.logo' => 'nullable|string', // new
+            'products.*.logo' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        try {
-            foreach ($request->products as $product) {
-                // Check if this vendor already has this product
-                $exists = VendorProductItem::where('vendor_id', $request->vendor_id)
-                    ->where('product_id', $product['product_id'])
-                    ->exists();
+        if ($authorizationError = $this->authorizeVendorInventoryRequest(
+            $request,
+            (int) $request->vendor_id,
+            true
+        )) {
+            return $authorizationError;
+        }
 
-                if ($exists) {
+        try {
+            $preparedProducts = [];
+
+            foreach ($request->products as $product) {
+                $productVariantId =
+                    isset($product['product_variant_id']) && $product['product_variant_id'] !== ''
+                        ? (int) $product['product_variant_id']
+                        : null;
+                $resolvedWeight = $this->resolveVendorProductWeight(
+                    (int) $product['product_id'],
+                    $productVariantId,
+                    $product['weight'] ?? null
+                );
+                $resolvedUom = $this->resolveVendorProductUom(
+                    (int) $product['product_id'],
+                    $productVariantId,
+                    $product['uom'] ?? null
+                );
+                $resolvedVariantName = $this->resolveVendorProductVariantName(
+                    (int) $product['product_id'],
+                    $productVariantId,
+                    $product['variant_label'] ?? null
+                );
+                $resolvedVariantLabel = $this->formatVariantLabel([
+                    'variant_label' => $resolvedVariantName,
+                    'weight' => $resolvedWeight,
+                    'uom' => $resolvedUom,
+                ]);
+                $resolvedDisplayName = $this->formatDisplayName([
+                    'name' => $product['name'] ?? null,
+                    'variant_label' => $resolvedVariantLabel,
+                ]);
+                $vendorInputPrice = (float) ($product['price'] ?? 0);
+
+                if (
+                    $this->duplicateVendorProductItemExists(
+                        (int) $request->vendor_id,
+                        (int) $product['product_id'],
+                        $productVariantId
+                    )
+                ) {
                     return response()->json([
-                        'error' => "Product '{$product['name']}' already exists."
+                        'error' => sprintf(
+                            "Product variant '%s' already exists.",
+                            $resolvedDisplayName
+                        ),
                     ], 409);
                 }
 
-                VendorProductItem::create([
-                    'vendor_id' => $request->vendor_id,
-                    'category_id' => $request->category_id,
-                    'category_name' => $request->category_name,
-                    'product_id' => $product['product_id'],
-                    'name' => $product['name'],
-                    'quantity' => $product['quantity'],
-                    'price' => $product['price'],
-                    'uom' => $product['uom'],
-                    'logo' => $product['logo'] ?? null,
-                ]);
+                $duplicateInRequest = collect($preparedProducts)->first(function ($preparedProduct) use ($product, $productVariantId) {
+                    return (int) $preparedProduct['product_id'] === (int) $product['product_id']
+                        && (int) ($preparedProduct['product_variant_id'] ?? 0) === (int) ($productVariantId ?? 0);
+                });
+
+                if ($duplicateInRequest) {
+                    return response()->json([
+                        'error' => sprintf(
+                            "Product variant '%s' was selected more than once.",
+                            $resolvedDisplayName
+                        ),
+                    ], 409);
+                }
+
+                $preparedProducts[] = [
+                    'vendor_id' => (int) $request->vendor_id,
+                    'category_id' => (string) $request->category_id,
+                    'category_name' => (string) $request->category_name,
+                    'product_id' => (int) $product['product_id'],
+                    'product_variant_id' => $productVariantId,
+                    'name' => trim((string) $product['name']),
+                    'display_name' => $resolvedDisplayName,
+                    'variant_label' => $resolvedVariantLabel,
+                    'weight' => $resolvedWeight,
+                    'quantity' => (int) $product['quantity'],
+                    'vendor_price' => $vendorInputPrice,
+                    'price' => $this->applyVendorMarkup($vendorInputPrice),
+                    'uom' => $resolvedUom,
+                    'logo' => $this->resolveVendorProductLogo(
+                        (int) $product['product_id'],
+                        $productVariantId,
+                        $product['logo'] ?? null
+                    ),
+                ];
             }
 
+            DB::transaction(function () use ($preparedProducts) {
+                foreach ($preparedProducts as $preparedProduct) {
+                    VendorProductItem::create($preparedProduct);
+                }
+            });
+
             return response()->json([
-                'message' => 'Products successfully added to vendor inventory'
+                'message' => 'Products successfully added to vendor inventory',
             ], 201);
         } catch (\Exception $e) {
             return response()->json([
@@ -491,31 +1027,166 @@ case 'price-low':
     {
         $validator = Validator::make($request->all(), [
             'vendorId' => 'required|integer|exists:users,id',
+            'product_id' => 'sometimes|integer',
+            'product_variant_id' => 'nullable|integer',
             'name' => 'sometimes|string',
-            'quantity' => 'sometimes|integer|min:1',
+            'brand_name' => 'nullable|string',
+            'display_name' => 'sometimes|string',
+            'variant_label' => 'nullable|string',
+            'uom' => 'nullable|string',
+            'weight' => 'nullable|numeric|min:0',
+            'quantity' => 'sometimes|integer|min:0',
             'price' => 'sometimes|numeric|min:0',
-            'uom' => 'sometimes|string',
+            'logo' => 'nullable|string',
             'category_id' => 'sometimes|string',
+            'category_name' => 'sometimes|string',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        try {
-            $vendorProduct = VendorProductItem::where('vendor_id', $request->vendorId)->findOrFail($id);
+        if ($authorizationError = $this->authorizeVendorInventoryRequest(
+            $request,
+            (int) $request->vendorId,
+            true
+        )) {
+            return $authorizationError;
+        }
 
-            $vendorProduct->update($request->only([
-                'name',
-                'quantity',
-                'price',
-                'uom',
-                'category_id'
-            ]));
+        try {
+            $vendorProduct = VendorProductItem::where('vendor_id', $request->vendorId)
+                ->with('vendor')
+                ->findOrFail($id);
+
+            $previousQuantity = (int) $vendorProduct->quantity;
+
+            $productId = $request->filled('product_id')
+                ? (int) $request->product_id
+                : (int) $vendorProduct->product_id;
+            $existingVariantId = $vendorProduct->product_variant_id
+                ? (int) $vendorProduct->product_variant_id
+                : null;
+
+            $productVariantId = $request->has('product_variant_id')
+                ? (
+                    $request->input('product_variant_id') !== null &&
+                    $request->input('product_variant_id') !== ''
+                        ? (int) $request->input('product_variant_id')
+                        : null
+                )
+                : $existingVariantId;
+
+            if (
+                $this->duplicateVendorProductItemExists(
+                    (int) $request->vendorId,
+                    $productId,
+                    $productVariantId,
+                    (int) $vendorProduct->id
+                )
+            ) {
+                return response()->json([
+                    'error' => 'This vendor already has the selected product variant.',
+                ], 409);
+            }
+
+            $payload = array_merge(
+                $vendorProduct->only([
+                    'name',
+                    'brand_name',
+                    'display_name',
+                    'variant_label',
+                    'logo',
+                ]),
+                $request->only([
+                    'name',
+                    'brand_name',
+                    'display_name',
+                    'variant_label',
+                    'logo',
+                ])
+            );
+
+            $payload['name'] = trim((string) ($payload['name'] ?? $vendorProduct->name));
+            $resolvedUom = ($productId !== (int) $vendorProduct->product_id || $productVariantId !== $existingVariantId || blank($vendorProduct->uom))
+                ? $this->resolveVendorProductUom($productId, $productVariantId, $request->input('uom', $vendorProduct->uom))
+                : $vendorProduct->uom;
+            $resolvedWeight = (
+                $productId !== (int) $vendorProduct->product_id ||
+                $productVariantId !== $existingVariantId ||
+                is_null($vendorProduct->weight) ||
+                $request->has('weight')
+            )
+                ? $this->resolveVendorProductWeight(
+                    $productId,
+                    $productVariantId,
+                    $request->input('weight', $vendorProduct->weight)
+                )
+                : (isset($vendorProduct->weight) ? (float) $vendorProduct->weight : null);
+            $resolvedLogo = (
+                $productId !== (int) $vendorProduct->product_id ||
+                $productVariantId !== $existingVariantId ||
+                blank($vendorProduct->logo) ||
+                $request->has('logo')
+            )
+                ? $this->resolveVendorProductLogo(
+                    $productId,
+                    $productVariantId,
+                    $payload['logo'] ?? $vendorProduct->logo
+                )
+                : $vendorProduct->logo;
+            $resolvedVariantName = $this->resolveVendorProductVariantName(
+                $productId,
+                $productVariantId,
+                $payload['variant_label'] ?? null
+            );
+            $vendorInputPrice = $request->has('price')
+                ? (float) $request->input('price', 0)
+                : (isset($vendorProduct->vendor_price) && $vendorProduct->vendor_price !== null
+                    ? (float) $vendorProduct->vendor_price
+                    : (float) ($vendorProduct->price ?? 0));
+            $payload['variant_label'] = $this->formatVariantLabel([
+                'variant_label' => $resolvedVariantName,
+                'weight' => $resolvedWeight,
+                'uom' => $resolvedUom,
+            ]);
+            $payload['display_name'] = $this->formatDisplayName([
+                'name' => $payload['name'],
+                'variant_label' => $payload['variant_label'],
+            ]);
+
+            $vendorProduct->update([
+                'product_id' => $productId,
+                'product_variant_id' => $productVariantId,
+                'name' => $payload['name'],
+                'display_name' => $payload['display_name'],
+                'variant_label' => $payload['variant_label'],
+                'weight' => $resolvedWeight,
+                'quantity' => (int) $request->input('quantity', $vendorProduct->quantity),
+                'vendor_price' => $vendorInputPrice,
+                'price' => $this->applyVendorMarkup($vendorInputPrice),
+                'uom' => $resolvedUom,
+                'logo' => $resolvedLogo,
+                'category_id' => $request->input('category_id', $vendorProduct->category_id),
+                'category_name' => $request->input('category_name', $vendorProduct->category_name),
+            ]);
+
+            $vendorProduct->refresh()->load('vendor');
+
+            if ($previousQuantity > 0 && (int) $vendorProduct->quantity <= 0) {
+                try {
+                    app(VendorStockNotifier::class)->notifyIfJustWentOutOfStock($vendorProduct);
+                } catch (\Throwable $e) {
+                    Log::warning('Vendor out-of-stock notification failed after inventory update', [
+                        'vendor_product_item_id' => $vendorProduct->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
 
             return response()->json([
                 'message' => 'Vendor product updated successfully',
-                'data' => $vendorProduct
+                'data' => $this->mapVendorProductItem($vendorProduct),
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -540,6 +1211,14 @@ case 'price-low':
         $vendorId = $request->vendorId;
         $productIds = $request->productIds;
 
+        if ($authorizationError = $this->authorizeVendorInventoryRequest(
+            $request,
+            (int) $vendorId,
+            true
+        )) {
+            return $authorizationError;
+        }
+
         try {
             $deletedCount = VendorProductItem::where('vendor_id', $vendorId)
                 ->whereIn('id', $productIds)
@@ -559,12 +1238,16 @@ case 'price-low':
     /**
      * Show vendor products (paginated).
      */
-    public function showVendorProducts($vendorId)
+    public function showVendorProducts(Request $request, $vendorId)
     {
         try {
+            $perPage = (int) $request->query('per_page', 50);
+            $perPage = $perPage > 0 ? min($perPage, 200) : 50;
+
             $vendorProducts = VendorProductItem::with('vendor')
                 ->where('vendor_id', $vendorId)
-                ->paginate(10);
+                ->latest('id')
+                ->paginate($perPage);
 
             if ($vendorProducts->isEmpty()) {
                 return response()->json([
@@ -572,35 +1255,20 @@ case 'price-low':
                     'vendor' => null,
                     'pagination' => [
                         'current_page' => 1,
-                        'per_page' => 10,
+                        'per_page' => $perPage,
                         'total' => 0,
                         'last_page' => 1,
                     ],
                 ]);
             }
 
-            // map the products to include vendor name
-            $products = $vendorProducts->map(function ($item) {
-                return [
-                    'id' => $item->id,
-                    'product_id' => $item->product_id,
-                    'vendor_id' => $item->vendor_id,
-                    'vendor_name' => $item->vendor->fullname ?? 'Unknown Vendor',
-                    'category_id' => $item->category_id,
-                    'category_name' => $item->category_name,
-                    'name' => $item->name,
-                    'logo' => $item->logo,
-                    'uom' => $item->uom,
-                    'quantity' => $item->quantity,
-                    'price' => $item->price,
-                    'created_at' => $item->created_at,
-                    'updated_at' => $item->updated_at,
-                ];
-            });
+            $products = $vendorProducts->getCollection()
+                ->map(fn($item) => $this->mapVendorProductItem($item))
+                ->values();
 
             return response()->json([
                 'data' => $products,
-                'vendor' => $vendorProducts->first()->vendor ?? null, // send vendor info
+                'vendor' => $vendorProducts->first()->vendor ?? null,
                 'pagination' => [
                     'total' => $vendorProducts->total(),
                     'per_page' => $vendorProducts->perPage(),
@@ -608,7 +1276,7 @@ case 'price-low':
                     'last_page' => $vendorProducts->lastPage(),
                     'from' => $vendorProducts->firstItem(),
                     'to' => $vendorProducts->lastItem(),
-                ]
+                ],
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -625,10 +1293,12 @@ case 'price-low':
     public function showSingleVendorProduct($id)
     {
         try {
-            $vendorProduct = VendorProductItem::where('vendor_id', Auth::id())->findOrFail($id);
+            $vendorProduct = VendorProductItem::where('vendor_id', Auth::id())
+                ->with('vendor')
+                ->findOrFail($id);
 
             return response()->json([
-                'data' => $vendorProduct
+                'data' => $this->mapVendorProductItem($vendorProduct),
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -641,7 +1311,12 @@ case 'price-low':
     public function publicVendorProducts($vendorId)
     {
         try {
-            $products = VendorProductItem::where('vendor_id', $vendorId)->get();
+            $products = VendorProductItem::with('vendor')
+                ->where('vendor_id', $vendorId)
+                ->latest()
+                ->get()
+                ->map(fn($item) => $this->mapVendorProductItem($item))
+                ->values();
 
             return response()->json([
                 'status' => 'success',

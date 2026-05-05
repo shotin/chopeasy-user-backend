@@ -15,16 +15,15 @@ class OrderEstimateRequest extends FormRequest
     {
         return [
             'items' => 'required|array|min:1',
-            'items.*.product_id' => 'required|integer', // Removed exists check - product is in inventory service
+            'items.*.product_id' => 'required|integer',
             'items.*.quantity' => 'required|integer|min:1',
             'items.*.weight_kg' => 'required|numeric|min:0.1',
             'items.*.price' => 'required|numeric|min:0',
-            
+            'items.*.vendor_price' => 'nullable|numeric|min:0',
             'pickup_latitude' => 'required|numeric|between:-90,90',
             'pickup_longitude' => 'required|numeric|between:-180,180',
             'delivery_latitude' => 'required|numeric|between:-90,90',
             'delivery_longitude' => 'required|numeric|between:-180,180',
-            
             'region_id' => 'nullable|string|max:50',
         ];
     }
@@ -39,24 +38,26 @@ class OrderEstimateRequest extends FormRequest
         ];
     }
 
-    /**
-     * Get calculated values from the request
-     */
     public function getCalculatedValues(): array
     {
         $items = $this->input('items', []);
-        
+
         $itemCount = array_sum(array_column($items, 'quantity'));
         $totalWeight = array_sum(array_map(function ($item) {
             return $item['quantity'] * $item['weight_kg'];
         }, $items));
-        $vendorSubtotal = array_sum(array_map(function ($item) {
+        $customerSubtotal = array_sum(array_map(function ($item) {
             return $item['quantity'] * $item['price'];
+        }, $items));
+        $vendorSubtotal = array_sum(array_map(function ($item) {
+            $unitPrice = $item['vendor_price'] ?? $item['price'];
+            return $item['quantity'] * $unitPrice;
         }, $items));
 
         return [
             'item_count' => $itemCount,
             'total_weight' => round($totalWeight, 2),
+            'customer_product_subtotal' => round($customerSubtotal, 2),
             'vendor_subtotal' => round($vendorSubtotal, 2),
         ];
     }

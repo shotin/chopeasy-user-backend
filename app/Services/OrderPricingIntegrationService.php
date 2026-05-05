@@ -3,16 +3,11 @@
 namespace App\Services;
 
 use App\Models\Order;
-use App\Models\OrderItem;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Exception;
 
 /**
- * OrderPricingIntegrationService
- * 
- * Integrates pricing calculations into order creation flow
- * This service should be called during checkout to apply pricing
+ * Integrates pricing calculations into saved orders.
  */
 class OrderPricingIntegrationService
 {
@@ -23,82 +18,80 @@ class OrderPricingIntegrationService
         $this->pricingService = new PricingService($regionId);
     }
 
-    /**
-     * Apply pricing to an order
-     * Call this method during order creation/checkout
-     * 
-     * @param Order $order
-     * @param array $coordinates ['pickup_lat', 'pickup_lng', 'delivery_lat', 'delivery_lng']
-     * @param array|null $itemsData Optional array with weight data if products are in separate service
-     *                              Format: [['product_id' => 1, 'quantity' => 2, 'weight_kg' => 10, 'price' => 2000], ...]
-     * @return Order Updated order with pricing
-     */
     public function applyPricingToOrder(Order $order, array $coordinates, ?array $itemsData = null): Order
     {
         try {
-            // If items data provided (microservices scenario), use it
             if ($itemsData !== null) {
                 $itemCount = array_sum(array_column($itemsData, 'quantity'));
                 $totalWeight = array_sum(array_map(function ($item) {
-                    return $item['quantity'] * ($item['weight_kg'] ?? 0);
+                    return ($item['quantity'] ?? 0) * ($item['weight_kg'] ?? 0);
+                }, $itemsData));
+                $customerSubtotal = array_sum(array_map(function ($item) {
+                    return ($item['quantity'] ?? 0) * ($item['customer_price'] ?? $item['price'] ?? 0);
                 }, $itemsData));
                 $vendorSubtotal = array_sum(array_map(function ($item) {
-                    return $item['quantity'] * ($item['price'] ?? 0);
+                    $unitPrice = $item['vendor_price'] ?? $item['price'] ?? 0;
+                    return ($item['quantity'] ?? 0) * $unitPrice;
                 }, $itemsData));
             } else {
-                // Traditional approach - get from database
                 $items = $order->items()->get();
 
                 if ($items->isEmpty()) {
                     throw new Exception('Order has no items');
                 }
 
-                // Calculate totals from items
                 $itemCount = $items->sum('quantity');
-                
-                // Try to get weight from product_snapshot if products are in separate service
                 $totalWeight = $items->sum(function ($item) {
-                    // Check product_snapshot first (if stored during order creation)
-                    if (isset($item->product_snapshot['weight_kg'])) {
-                        return $item->quantity * $item->product_snapshot['weight_kg'];
-                    }
-                    
-                    // Fallback: check if product relationship exists (monolith setup)
-                    if ($item->relationLoaded('product') && $item->product) {
-                        return $item->quantity * ($item->product->weight_kg ?? 0);
-                    }
-                    
-                    // No weight data available
-                    throw new Exception("Weight data not available for item ID {$item->id}. Please provide itemsData parameter or ensure product_snapshot contains weight_kg.");
+                    $snapshot = is_array($item->product_snapshot)
+                        ? $item->product_snapshot
+                        : (json_decode($item->product_snapshot ?? '[]', true) ?: []);
+
+                    return $item->quantity * (float) ($snapshot['weight_kg'] ?? 0);
                 });
-                
+                $customerSubtotal = $items->sum(function ($item) {
+                    $snapshot = is_array($item->product_snapshot)
+                        ? $item->product_snapshot
+                        : (json_decode($item->product_snapshot ?? '[]', true) ?: []);
+
+                    $unitPrice = $snapshot['customer_price'] ?? $snapshot['price'] ?? $item->price_at_order;
+                    return $item->quantity * (float) $unitPrice;
+                });
                 $vendorSubtotal = $items->sum(function ($item) {
-                    return $item->quantity * $item->price;
+                    $snapshot = is_array($item->product_snapshot)
+                        ? $item->product_snapshot
+                        : (json_decode($item->product_snapshot ?? '[]', true) ?: []);
+
+                    $unitPrice = $snapshot['vendor_price'] ?? $snapshot['customer_price'] ?? $snapshot['price'] ?? $item->price_at_order;
+                    return $item->quantity * (float) $unitPrice;
                 });
             }
 
-            // Calculate distance
             $distance = PricingService::calculateDistance(
-                $coordinates['pickup_lat'],
-                $coordinates['pickup_lng'],
-                $coordinates['delivery_lat'],
-                $coordinates['delivery_lng']
+                (float) $coordinates['pickup_lat'],
+                (float) $coordinates['pickup_lng'],
+                (float) $coordinates['delivery_lat'],
+                (float) $coordinates['delivery_lng']
             );
 
-            // Calculate pricing
             $pricing = $this->pricingService->calculateOrderPricing(
-                $itemCount,
-                $totalWeight,
-                $distance,
-                $vendorSubtotal
+                (int) $itemCount,
+                (float) $totalWeight,
+                (float) $distance,
+                (float) $customerSubtotal,
+                (float) $vendorSubtotal
             );
 
-            // Update order with pricing data
             $order->update([
+                'customer_product_subtotal' => $pricing['customer_product_subtotal'] ?? 0,
+                'service_fee_total' => $pricing['service_fee_total'] ?? 0,
+                'delivery_fee_total' => $pricing['delivery_fee_total'] ?? $pricing['total_charge'],
+                'base_fee_total' => $pricing['base_fee'] ?? $pricing['base_charge'] ?? 0,
+                'weight_fee_total' => $pricing['weight_fee'] ?? $pricing['weight_service_fee'] ?? 0,
+                'distance_fee_total' => $pricing['distance_fee'] ?? $pricing['distance_charge_total'] ?? 0,
                 'total_weight' => $totalWeight,
                 'item_count' => $itemCount,
                 'distance_in_km' => $distance,
-                'computed_total_charge' => $pricing['total_charge'],
+                'computed_total_charge' => $pricing['delivery_fee_total'] ?? $pricing['total_charge'],
                 'platform_revenue' => $pricing['payout_breakdown']['platform_revenue'],
                 'rider_payout' => $pricing['payout_breakdown']['rider_payout'],
                 'vendor_payout' => $pricing['payout_breakdown']['vendor_payout'],
@@ -109,18 +102,17 @@ class OrderPricingIntegrationService
                 'pickup_longitude' => $coordinates['pickup_lng'],
                 'delivery_latitude' => $coordinates['delivery_lat'],
                 'delivery_longitude' => $coordinates['delivery_lng'],
-                // Update total_amount to include delivery charge + vendor subtotal
                 'total_amount' => $pricing['payout_breakdown']['total_to_collect_from_customer'],
             ]);
 
             Log::info('Pricing applied to order', [
                 'order_id' => $order->id,
-                'total_charge' => $pricing['total_charge'],
+                'delivery_fee' => $pricing['delivery_fee_total'] ?? $pricing['total_charge'],
+                'service_fee' => $pricing['service_fee_total'] ?? 0,
                 'platform_revenue' => $pricing['payout_breakdown']['platform_revenue'],
             ]);
 
             return $order->fresh();
-
         } catch (Exception $e) {
             Log::error('Failed to apply pricing to order', [
                 'order_id' => $order->id,
@@ -130,10 +122,6 @@ class OrderPricingIntegrationService
         }
     }
 
-    /**
-     * Recalculate pricing for an existing order
-     * Useful for order modifications or repricing
-     */
     public function recalculatePricing(Order $order): Order
     {
         if (!$order->pickup_latitude || !$order->delivery_latitude) {
@@ -148,9 +136,6 @@ class OrderPricingIntegrationService
         ]);
     }
 
-    /**
-     * Get pricing summary for display
-     */
     public function getPricingSummary(Order $order): array
     {
         if (!$order->pricing_breakdown) {
@@ -167,19 +152,24 @@ class OrderPricingIntegrationService
             'order_id' => $order->id,
             'order_number' => $order->order_number,
             'delivery_charges' => [
-                'base_charge' => $breakdown['base_charge'],
-                'service_charge' => $breakdown['service_charge_total'],
-                'distance_charge' => $breakdown['distance_charge_total'],
-                'weight_service_fee' => $breakdown['weight_service_fee'],
-                'total_delivery_charge' => $breakdown['total_charge'],
+                'base_charge' => $breakdown['base_fee'] ?? $breakdown['base_charge'] ?? 0,
+                'weight_fee' => $breakdown['weight_fee'] ?? $breakdown['weight_service_fee'] ?? 0,
+                'distance_charge' => $breakdown['distance_fee'] ?? $breakdown['distance_charge_total'] ?? 0,
+                'total_delivery_charge' => $breakdown['delivery_fee_total'] ?? $breakdown['total_charge'] ?? 0,
             ],
             'order_details' => [
                 'item_count' => $breakdown['item_count'],
                 'total_weight_kg' => $breakdown['total_weight_kg'],
                 'distance_km' => $breakdown['distance_km'],
-                'vendor_items_cost' => $breakdown['vendor_subtotal'],
+                'product_cost' => $breakdown['customer_product_subtotal'] ?? 0,
+                'vendor_items_cost' => $breakdown['vendor_subtotal'] ?? 0,
+                'product_markup_total' => $breakdown['product_markup_total'] ?? 0,
             ],
             'payment_summary' => [
+                'service_fee' => $breakdown['service_fee_total'] ?? $breakdown['service_charge_total'] ?? 0,
+                'vendor_items_gross' => $breakdown['payout_breakdown']['vendor_gross_payout'] ?? ($breakdown['vendor_subtotal'] ?? 0),
+                'vendor_take_percent' => $breakdown['payout_breakdown']['vendor_take_percent'] ?? ($breakdown['vendor_take_percent'] ?? 0),
+                'vendor_take_total' => $breakdown['payout_breakdown']['vendor_take_total'] ?? 0,
                 'vendor_items' => $order->vendor_payout,
                 'delivery_charge' => $order->computed_total_charge,
                 'total_amount' => $order->total_amount,
@@ -188,9 +178,6 @@ class OrderPricingIntegrationService
         ];
     }
 
-    /**
-     * Calculate expected earnings for different parties
-     */
     public function getEarningsBreakdown(Order $order): array
     {
         return [
@@ -200,50 +187,49 @@ class OrderPricingIntegrationService
             'earnings' => [
                 'platform' => [
                     'amount' => $order->platform_revenue,
-                    'description' => 'Platform margin from delivery charges',
+                    'description' => 'Platform revenue from markup, service fee, delivery margin, and vendor take',
                 ],
                 'rider' => [
                     'amount' => $order->rider_payout,
-                    'description' => 'Rider delivery payout',
+                    'description' => 'Rider net payout: distance fee plus rider share of weight fee (excludes order base fee and platform share of weight fee)',
                 ],
                 'vendor' => [
                     'amount' => $order->vendor_payout,
-                    'description' => 'Vendor items payout',
+                    'gross_amount' => $order->pricing_breakdown['payout_breakdown']['vendor_gross_payout'] ?? $order->pricing_breakdown['vendor_subtotal'] ?? $order->vendor_payout,
+                    'take_percent' => $order->pricing_breakdown['payout_breakdown']['vendor_take_percent'] ?? $order->pricing_breakdown['vendor_take_percent'] ?? 0,
+                    'take_amount' => $order->pricing_breakdown['payout_breakdown']['vendor_take_total'] ?? 0,
+                    'description' => 'Vendor payout after configured platform take',
                 ],
             ],
             'margin_percentage' => $order->pricing_breakdown['payout_breakdown']['platform_margin_percentage'] ?? 0,
         ];
     }
 
-    /**
-     * Helper: Build items data array from cart/inventory service
-     * Use this when products are in a separate microservice
-     * 
-     * @param array $cartItems Array of cart items from your system
-     * @param array $productsData Product details fetched from inventory service
-     * @return array Formatted items ready for pricing calculation
-     */
     public static function buildItemsDataFromInventoryService(array $cartItems, array $productsData): array
     {
         $itemsData = [];
-        
+
         foreach ($cartItems as $cartItem) {
             $productId = $cartItem['product_id'];
-            
+
             if (!isset($productsData[$productId])) {
                 throw new Exception("Product data not found for product_id: {$productId}");
             }
-            
+
             $product = $productsData[$productId];
-            
+            $customerPrice = (float) ($product['price'] ?? 0);
+            $vendorPrice = (float) ($product['vendor_price'] ?? $customerPrice);
+
             $itemsData[] = [
                 'product_id' => $productId,
                 'quantity' => $cartItem['quantity'],
                 'weight_kg' => $product['weight_kg'] ?? 0,
-                'price' => $product['price'] ?? 0,
+                'price' => $customerPrice,
+                'customer_price' => $customerPrice,
+                'vendor_price' => $vendorPrice,
             ];
         }
-        
+
         return $itemsData;
     }
 }

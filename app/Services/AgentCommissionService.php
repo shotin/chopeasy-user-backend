@@ -1,0 +1,317 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\AgentCommissionSetting;
+use App\Models\AgentEarning;
+use App\Models\AgentReferralCommissionCounter;
+use App\Models\Order;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class AgentCommissionService
+{
+    public function settings(): AgentCommissionSetting
+    {
+        $row = AgentCommissionSetting::query()->first();
+        if ($row) {
+            return $row;
+        }
+
+        return AgentCommissionSetting::query()->create([
+            'customer_percent' => 10,
+            'vendor_percent' => 10,
+            'rider_percent' => 10,
+            'max_vendor_rider_payout_commissions' => 5,
+        ]);
+    }
+
+    public function creditCustomerOrderOnDeliveryConfirm(Order $order): void
+    {
+        $order->loadMissing('user');
+        $user = $order->user;
+        if (!$user || !$user->referred_by_agent_id) {
+            return;
+        }
+
+        if (AgentEarning::where('order_id', $order->id)->where('earning_type', 'customer_order')->exists()) {
+            return;
+        }
+
+        $agentId = (int) $user->referred_by_agent_id;
+        $agent = User::find($agentId);
+        if (!$agent || $agent->user_type !== 'agent') {
+            return;
+        }
+
+        $settings = $this->settings();
+        $pct = (float) $settings->customer_percent;
+        $base = $this->customerCompanyRevenueBase($order);
+        $amount = round($base * ($pct / 100), 2);
+        if ($amount <= 0) {
+            return;
+        }
+
+        DB::transaction(function () use ($agentId, $order, $base, $pct, $amount, $user) {
+            AgentEarning::create([
+                'agent_id' => $agentId,
+                'order_id' => $order->id,
+                'earning_type' => 'customer_order',
+                'referred_user_id' => $user->id,
+                'order_amount' => $base,
+                'commission_percent' => $pct,
+                'amount' => $amount,
+                'status' => 'credited',
+            ]);
+            User::where('id', $agentId)->increment('main_wallet', $amount);
+        });
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $vendorPayoutEntries
+     */
+    public function creditVendorReferralsAfterPayout(Order $order, array $vendorPayoutEntries): void
+    {
+        $settings = $this->settings();
+        $pct = (float) $settings->vendor_percent;
+        $max = (int) $settings->max_vendor_rider_payout_commissions;
+
+        foreach ($vendorPayoutEntries as $entry) {
+            $vendorId = (int) ($entry['vendor_id'] ?? 0);
+            if ($vendorId <= 0) {
+                continue;
+            }
+
+            $status = strtolower((string) ($entry['status'] ?? ''));
+            if (!in_array($status, ['paid', 'processing'], true)) {
+                continue;
+            }
+
+            $vendor = User::find($vendorId);
+            if (!$vendor || $vendor->user_type !== 'vendor' || !$vendor->referred_by_agent_id) {
+                continue;
+            }
+
+            $agentId = (int) $vendor->referred_by_agent_id;
+            $agent = User::find($agentId);
+            if (!$agent || $agent->user_type !== 'agent') {
+                continue;
+            }
+
+            if (
+                AgentEarning::where('order_id', $order->id)
+                    ->where('earning_type', 'vendor_payout')
+                    ->where('referred_user_id', $vendorId)
+                    ->exists()
+            ) {
+                continue;
+            }
+
+            if (!$this->canTakeVendorRiderCommission($agentId, $vendorId, 'vendor', $max)) {
+                continue;
+            }
+
+            $vendorTakeAmount = (float) ($entry['vendor_take_amount'] ?? 0);
+            $gross = (float) ($entry['gross_amount'] ?? 0);
+            $base = $this->vendorCompanyProfitBase($order, $vendorTakeAmount, $gross);
+            if ($base <= 0) {
+                continue;
+            }
+
+            $amount = round($base * ($pct / 100), 2);
+            if ($amount <= 0) {
+                continue;
+            }
+
+            DB::transaction(function () use ($agentId, $order, $vendorId, $pct, $amount, $base) {
+                AgentEarning::create([
+                    'agent_id' => $agentId,
+                    'order_id' => $order->id,
+                    'earning_type' => 'vendor_payout',
+                    'referred_user_id' => $vendorId,
+                    'order_amount' => $base,
+                    'commission_percent' => $pct,
+                    'amount' => $amount,
+                    'status' => 'credited',
+                ]);
+                User::where('id', $agentId)->increment('main_wallet', $amount);
+                $this->incrementVendorRiderCounter($agentId, $vendorId, 'vendor');
+            });
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $riderPayout
+     */
+    public function creditRiderReferralAfterPayout(Order $order, ?array $riderPayout): void
+    {
+        if (!$riderPayout) {
+            return;
+        }
+
+        $status = strtolower((string) ($riderPayout['status'] ?? ''));
+        if (!in_array($status, ['paid', 'processing'], true)) {
+            return;
+        }
+
+        $riderId = (int) ($riderPayout['rider_id'] ?? $order->accepted_by ?? 0);
+        if ($riderId <= 0) {
+            return;
+        }
+
+        $rider = User::find($riderId);
+        if (!$rider || $rider->user_type !== 'rider' || !$rider->referred_by_agent_id) {
+            return;
+        }
+
+        $agentId = (int) $rider->referred_by_agent_id;
+        $agent = User::find($agentId);
+        if (!$agent || $agent->user_type !== 'agent') {
+            return;
+        }
+
+        if (
+            AgentEarning::where('order_id', $order->id)
+                ->where('earning_type', 'rider_payout')
+                ->where('referred_user_id', $riderId)
+                ->exists()
+        ) {
+            return;
+        }
+
+        $settings = $this->settings();
+        $max = (int) $settings->max_vendor_rider_payout_commissions;
+        if (!$this->canTakeVendorRiderCommission($agentId, $riderId, 'rider', $max)) {
+            return;
+        }
+
+        $pct = (float) $settings->rider_percent;
+        $base = $this->riderCompanyProfitBase($order, (float) ($riderPayout['amount'] ?? 0));
+        $amount = round($base * ($pct / 100), 2);
+        if ($amount <= 0) {
+            return;
+        }
+
+        DB::transaction(function () use ($agentId, $order, $riderId, $pct, $amount, $base) {
+            AgentEarning::create([
+                'agent_id' => $agentId,
+                'order_id' => $order->id,
+                'earning_type' => 'rider_payout',
+                'referred_user_id' => $riderId,
+                'order_amount' => $base,
+                'commission_percent' => $pct,
+                'amount' => $amount,
+                'status' => 'credited',
+            ]);
+            User::where('id', $agentId)->increment('main_wallet', $amount);
+            $this->incrementVendorRiderCounter($agentId, $riderId, 'rider');
+        });
+    }
+
+    public function describeEarning(AgentEarning $earning): array
+    {
+        return [
+            'commission_base_amount' => $this->recordedCommissionBaseAmount($earning),
+            'commission_base_label' => match ($earning->earning_type) {
+                'customer_order' => 'Company revenue',
+                'vendor_payout' => 'Company vendor profit',
+                'rider_payout' => 'Company delivery profit',
+                default => 'Commission base',
+            },
+        ];
+    }
+
+    protected function canTakeVendorRiderCommission(int $agentId, int $referredUserId, string $kind, int $max): bool
+    {
+        $row = AgentReferralCommissionCounter::firstOrCreate(
+            [
+                'agent_id' => $agentId,
+                'referred_user_id' => $referredUserId,
+                'referral_kind' => $kind,
+            ],
+            ['payout_count' => 0]
+        );
+
+        return (int) $row->payout_count < $max;
+    }
+
+    protected function incrementVendorRiderCounter(int $agentId, int $referredUserId, string $kind): void
+    {
+        AgentReferralCommissionCounter::where([
+            'agent_id' => $agentId,
+            'referred_user_id' => $referredUserId,
+            'referral_kind' => $kind,
+        ])->increment('payout_count');
+    }
+
+    protected function customerCompanyRevenueBase(Order $order): float
+    {
+        $breakdown = $this->payoutBreakdown($order);
+        $base = (float) ($order->platform_revenue ?? ($breakdown['platform_revenue'] ?? 0));
+
+        return round(max($base, 0), 2);
+    }
+
+    protected function vendorCompanyProfitBase(Order $order, ?float $vendorTakeAmount = null, ?float $grossAmount = null): float
+    {
+        $breakdown = $this->pricingBreakdown($order);
+        $payoutBreakdown = $this->payoutBreakdown($order);
+        if ($vendorTakeAmount !== null && $vendorTakeAmount > 0) {
+            return round($vendorTakeAmount, 2);
+        }
+
+        $vendorTakePercent = (float) ($payoutBreakdown['vendor_take_percent']
+            ?? $breakdown['vendor_take_percent']
+            ?? 0);
+        $vendorGrossAmount = $grossAmount !== null && $grossAmount > 0 ? $grossAmount : 0.0;
+        $resolvedTake = $vendorGrossAmount > 0
+            ? round($vendorGrossAmount * ($vendorTakePercent / 100), 2)
+            : 0.0;
+
+        return round(max($resolvedTake, 0), 2);
+    }
+
+    protected function riderCompanyProfitBase(Order $order, ?float $riderPayoutAmount = null): float
+    {
+        $breakdown = $this->pricingBreakdown($order);
+        $payoutBreakdown = $this->payoutBreakdown($order);
+
+        $deliveryFeeTotal = (float) ($order->delivery_fee_total
+            ?? ($breakdown['delivery_fee_total'] ?? $breakdown['total_charge'] ?? 0));
+        $riderPayout = $riderPayoutAmount !== null && $riderPayoutAmount > 0
+            ? $riderPayoutAmount
+            : (float) ($payoutBreakdown['rider_payout'] ?? $order->rider_payout ?? 0);
+
+        return round(max($deliveryFeeTotal - $riderPayout, 0), 2);
+    }
+
+    protected function recordedCommissionBaseAmount(AgentEarning $earning): float
+    {
+        $percent = (float) $earning->commission_percent;
+        if ($percent > 0 && (float) $earning->amount > 0) {
+            return round(((float) $earning->amount * 100) / $percent, 2);
+        }
+
+        return round((float) ($earning->order_amount ?? 0), 2);
+    }
+
+    protected function pricingBreakdown(Order $order): array
+    {
+        $breakdown = $order->pricing_breakdown;
+        if (is_array($breakdown)) {
+            return $breakdown;
+        }
+
+        $decoded = json_decode((string) $breakdown, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    protected function payoutBreakdown(Order $order): array
+    {
+        $breakdown = $this->pricingBreakdown($order);
+        $payoutBreakdown = $breakdown['payout_breakdown'] ?? null;
+
+        return is_array($payoutBreakdown) ? $payoutBreakdown : [];
+    }
+}
