@@ -1,0 +1,356 @@
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+
+class TransactionsTableSeeder extends Seeder
+{
+
+    /**
+     * Auto generated seed file
+     *
+     * @return void
+     */
+    public function run()
+    {
+        
+
+        \DB::table('transactions')->delete();
+        
+        \DB::table('transactions')->insert(array (
+            0 => 
+            array (
+                'id' => 26,
+                'user_id' => 25,
+                'order_id' => NULL,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '33.33',
+                'reference' => 'INSTALLMENT-HSWPO9WR',
+                'status' => 'successful',
+                'description' => 'Daily installment for Order',
+                'created_at' => '2026-01-14 07:13:42',
+                'updated_at' => '2026-01-14 07:13:42',
+            ),
+            1 => 
+            array (
+                'id' => 30,
+                'user_id' => 25,
+                'order_id' => 63,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '14673.29',
+                'reference' => 'OUTRIGHT-PJFX0VTX',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-1',
+                'created_at' => '2026-04-03 16:07:50',
+                'updated_at' => '2026-04-03 16:07:50',
+            ),
+            2 => 
+            array (
+                'id' => 31,
+                'user_id' => 25,
+                'order_id' => 64,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '40892.35',
+                'reference' => 'OUTRIGHT-DVYJCNCF',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-2',
+                'created_at' => '2026-04-03 20:46:48',
+                'updated_at' => '2026-04-03 20:46:48',
+            ),
+            3 => 
+            array (
+                'id' => 32,
+                'user_id' => 25,
+                'order_id' => 65,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '29194.40',
+                'reference' => 'WEEKLY-SGTOWLIM',
+                'status' => 'successful',
+                'description' => 'Weekly installment for Order ORD-3',
+                'created_at' => '2026-04-03 23:21:43',
+                'updated_at' => '2026-04-03 23:21:43',
+            ),
+            4 => 
+            array (
+                'id' => 33,
+                'user_id' => 25,
+                'order_id' => 65,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '160754.80',
+                'reference' => 'MONTHLY-NURU0YYS',
+                'status' => 'successful',
+                'description' => 'Monthly installment for Order ORD-3',
+                'created_at' => '2026-04-03 23:57:10',
+                'updated_at' => '2026-04-03 23:57:10',
+            ),
+            5 => 
+            array (
+                'id' => 34,
+                'user_id' => 25,
+                'order_id' => 66,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '22572.29',
+                'reference' => 'OUTRIGHT-T8PFONFA',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-4',
+                'created_at' => '2026-04-04 14:06:24',
+                'updated_at' => '2026-04-04 14:06:24',
+            ),
+            6 => 
+            array (
+                'id' => 35,
+                'user_id' => 25,
+                'order_id' => 67,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '29670.58',
+                'reference' => 'OUTRIGHT-RJHWCXFT',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-5',
+                'created_at' => '2026-04-04 15:22:44',
+                'updated_at' => '2026-04-04 15:22:44',
+            ),
+            7 => 
+            array (
+                'id' => 36,
+                'user_id' => 25,
+                'order_id' => 68,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '4436.65',
+                'reference' => 'WEEKLY-DSGNN8DN',
+                'status' => 'successful',
+                'description' => 'Weekly installment for Order ORD-6',
+                'created_at' => '2026-04-05 13:38:06',
+                'updated_at' => '2026-04-05 13:38:06',
+            ),
+            8 => 
+            array (
+                'id' => 37,
+                'user_id' => 25,
+                'order_id' => 69,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '1000.00',
+                'reference' => 'WEEKLY-WJSCDDMI',
+                'status' => 'successful',
+                'description' => 'Weekly installment for Order ORD-7',
+                'created_at' => '2026-04-05 13:40:21',
+                'updated_at' => '2026-04-05 13:40:21',
+            ),
+            9 => 
+            array (
+                'id' => 38,
+                'user_id' => 25,
+                'order_id' => 70,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '13923.29',
+                'reference' => 'ORD-8',
+                'status' => 'successful',
+                'description' => 'Reorder placed successfully for Order #ORD-1',
+                'created_at' => '2026-04-05 14:02:24',
+                'updated_at' => '2026-04-05 14:02:24',
+            ),
+            10 => 
+            array (
+                'id' => 39,
+                'user_id' => 25,
+                'order_id' => 71,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '13923.29',
+                'reference' => 'ORD-9',
+                'status' => 'successful',
+                'description' => 'Reorder placed successfully for Order #ORD-8',
+                'created_at' => '2026-04-05 14:06:34',
+                'updated_at' => '2026-04-05 14:06:34',
+            ),
+            11 => 
+            array (
+                'id' => 40,
+                'user_id' => 25,
+                'order_id' => 74,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '25964.80',
+                'reference' => 'OUTRIGHT-CFQNUAYX',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-10',
+                'created_at' => '2026-04-05 15:31:05',
+                'updated_at' => '2026-04-05 15:31:05',
+            ),
+            12 => 
+            array (
+                'id' => 41,
+                'user_id' => 25,
+                'order_id' => 75,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '6116.88',
+                'reference' => 'WEEKLY-VZTH4EZ1',
+                'status' => 'successful',
+                'description' => 'Weekly installment for Order ORD-11',
+                'created_at' => '2026-04-05 16:28:36',
+                'updated_at' => '2026-04-05 16:28:36',
+            ),
+            13 => 
+            array (
+                'id' => 42,
+                'user_id' => 25,
+                'order_id' => 76,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'food_wallet',
+                'amount' => '11492.17',
+                'reference' => 'MONTHLY-MLIBACSH',
+                'status' => 'successful',
+                'description' => 'Monthly installment for Order ORD-12',
+                'created_at' => '2026-04-05 16:32:31',
+                'updated_at' => '2026-04-05 16:32:31',
+            ),
+            14 => 
+            array (
+                'id' => 43,
+                'user_id' => 25,
+                'order_id' => NULL,
+                'type' => 'deposit',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '100000.00',
+                'reference' => 'dmaz5qz26w',
+                'status' => 'successful',
+                'description' => 'Wallet top up via Paystack',
+                'created_at' => '2026-04-06 08:44:12',
+                'updated_at' => '2026-04-06 08:44:12',
+            ),
+            15 => 
+            array (
+                'id' => 44,
+                'user_id' => 25,
+                'order_id' => 77,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '3000.00',
+                'reference' => 'MONTHLY-SQNXXT2R',
+                'status' => 'successful',
+                'description' => 'Monthly installment for Order ORD-13',
+                'created_at' => '2026-04-12 15:57:24',
+                'updated_at' => '2026-04-12 15:57:24',
+            ),
+            16 => 
+            array (
+                'id' => 45,
+                'user_id' => 25,
+                'order_id' => 78,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '121317.33',
+                'reference' => 'OUTRIGHT-MMASC1O0',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-14',
+                'created_at' => '2026-04-12 20:35:06',
+                'updated_at' => '2026-04-12 20:35:06',
+            ),
+            17 => 
+            array (
+                'id' => 46,
+                'user_id' => 7,
+                'order_id' => 79,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '109277.60',
+                'reference' => 'OUTRIGHT-1CD3OPCP',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-15',
+                'created_at' => '2026-04-17 20:13:22',
+                'updated_at' => '2026-04-17 20:13:22',
+            ),
+            18 => 
+            array (
+                'id' => 47,
+                'user_id' => 7,
+                'order_id' => 80,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '1000.00',
+                'reference' => 'WEEKLY-VCR8RIHF',
+                'status' => 'successful',
+                'description' => 'Weekly installment for Order ORD-16',
+                'created_at' => '2026-04-18 16:26:41',
+                'updated_at' => '2026-04-18 16:26:41',
+            ),
+            19 => 
+            array (
+                'id' => 48,
+                'user_id' => 7,
+                'order_id' => 81,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '50100.20',
+                'reference' => 'OUTRIGHT-6ULBT24L',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-17',
+                'created_at' => '2026-04-18 17:40:18',
+                'updated_at' => '2026-04-18 17:40:18',
+            ),
+            20 => 
+            array (
+                'id' => 49,
+                'user_id' => 7,
+                'order_id' => 82,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '34365.33',
+                'reference' => 'OUTRIGHT-K3EDAOEM',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-18',
+                'created_at' => '2026-04-25 17:12:19',
+                'updated_at' => '2026-04-25 17:12:19',
+            ),
+            21 => 
+            array (
+                'id' => 50,
+                'user_id' => 27,
+                'order_id' => 83,
+                'type' => 'deduction',
+                'source_wallet' => 'main_wallet',
+                'destination_wallet' => 'main_wallet',
+                'amount' => '285696.58',
+                'reference' => 'OUTRIGHT-I4E3SHGC',
+                'status' => 'successful',
+                'description' => 'Outright payment for Order ORD-19',
+                'created_at' => '2026-04-28 09:43:32',
+                'updated_at' => '2026-04-28 09:43:32',
+            ),
+        ));
+        
+        
+    }
+}
