@@ -14,11 +14,15 @@ class DatabaseSeeder extends Seeder
         $this->call([
             RoleSeeder::class,
             PermissionSeeder::class,
-            UserSeeder::class,
+            // UserSeeder::class,
             
             // Pricing Engine (uncomment to seed pricing data)
             // PricingEngineSeeder::class,
         ]);
+        $this->call(UsersTableSeeder::class);
+        $this->call(OrdersTableSeeder::class);
+        $this->call(OrderItemsTableSeeder::class);
+        $this->call(OrderStatusLogsTableSeeder::class);
         $this->call(AgentBankDetailsTableSeeder::class);
         $this->call(AgentCommissionSettingsTableSeeder::class);
         $this->call(AgentCustomerNotificationPrefsTableSeeder::class);
