@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
 
 class DatabaseSeeder extends Seeder
 {
@@ -11,6 +12,18 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        DB::statement('SET FOREIGN_KEY_CHECKS=0;');
+
+        foreach (glob(database_path('seeders/*TableSeeder.php')) as $file) {
+
+            $class = 'Database\\Seeders\\' . basename($file, '.php');
+
+            if (class_exists($class)) {
+                $this->call($class);
+            }
+        }
+
+      
         $this->call([
             RoleSeeder::class,
             PermissionSeeder::class,
@@ -71,5 +84,7 @@ class DatabaseSeeder extends Seeder
         $this->call(VendorProfilesTableSeeder::class);
         $this->call(WeightTiersTableSeeder::class);
         $this->call(WishlistsTableSeeder::class);
+
+        DB::statement('SET FOREIGN_KEY_CHECKS=1;');
     }
 }
